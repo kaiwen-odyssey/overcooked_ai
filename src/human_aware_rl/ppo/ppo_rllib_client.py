@@ -96,6 +96,10 @@ def my_config():
 
     num_workers = 30 if not LOCAL_TESTING else 2
 
+    # Number of environments each rollout worker steps in parallel; policy
+    # inference is batched across them, amortizing per-call overhead
+    num_envs_per_worker = 1
+
     # list of all random seeds to use for experiments, used to reproduce results
     seeds = [0]
 
@@ -252,6 +256,7 @@ def my_config():
     # to be passed into the rllib.PPOTrainer class
     training_params = {
         "num_workers": num_workers,
+        "num_envs_per_worker": num_envs_per_worker,
         "train_batch_size": train_batch_size,
         "sgd_minibatch_size": sgd_minibatch_size,
         "rollout_fragment_length": rollout_fragment_length,

@@ -486,7 +486,9 @@ class TrainingCallbacks(DefaultCallbacks):
         pass
 
     # Executes at the end of a call to Trainer.train, we'll update environment params (like annealing shaped rewards)
-    def on_train_result(self, trainer, result, **kwargs):
+    def on_train_result(self, trainer=None, result=None, algorithm=None, **kwargs):
+        # ray >= 2.x passes the trainer via the `algorithm` kwarg
+        trainer = trainer if trainer is not None else algorithm
         # Anneal the reward shaping coefficient based on environment paremeters and current timestep
         timestep = result["timesteps_total"]
         trainer.workers.foreach_worker(
@@ -662,6 +664,9 @@ def gen_trainer_from_params(params):
             "_temp_dir": params["ray_params"]["temp_dir"],
             "log_to_driver": params["verbose"],
             "logging_level": logging.INFO if params["verbose"] else logging.CRITICAL,
+            # Ensure remote rollout workers use legacy keras (tf_keras) so they can
+            # deserialize BC models saved with TF_USE_LEGACY_KERAS=1
+            "runtime_env": {"env_vars": {"TF_USE_LEGACY_KERAS": "1"}},
         }
         ray.init(**init_params)
     register_env("overcooked_multi_agent", params["ray_params"]["env_creator"])

@@ -281,9 +281,29 @@ def save_bc_model(model_dir, model, bc_params, verbose=False):
     if verbose:
         print("Saving bc model at ", model_dir)
 
-    # Save model with .keras extension
+    # Primary, portable format. keras 3 can round-trip this; it is also the
+    # fallback loaded by load_bc_model when no usable H5 is present.
     model_path = os.path.join(model_dir, "model.keras")
     model.save(model_path)
+
+    # Under legacy tf-keras (keras 2), additionally save a legacy H5 copy. rllib
+    # rollout workers force TF_USE_LEGACY_KERAS=1 and run tensorflow in v1/graph
+    # mode, where the keras_v3 .keras zip cannot be deserialized but a legacy H5
+    # can. We only write the H5 when *this* process is itself legacy-keras, so
+    # we never emit a keras-3-format H5 that those workers would fail to load.
+    if keras.__version__.startswith("2."):
+        try:
+            model.save(os.path.join(model_dir, "model.h5"), save_format="h5")
+        except Exception as e:
+            if verbose:
+                print("Skipping legacy H5 BC-model save:", e)
+    else:
+        print(
+            "WARNING: BC model saved under keras 3 (TF_USE_LEGACY_KERAS not set); "
+            "no legacy H5 written. rllib PPO+BC rollout workers force legacy keras "
+            "and cannot load this model. Re-run BC training with "
+            "TF_USE_LEGACY_KERAS=1 to use it as a PPO training partner."
+        )
 
     # Save metadata
     with open(os.path.join(model_dir, "metadata.pickle"), "wb") as f:
@@ -292,15 +312,35 @@ def save_bc_model(model_dir, model, bc_params, verbose=False):
 
 def load_bc_model(model_dir, verbose=False):
     """
-    Returns the model instance (including all compilation data like optimizer state) and a dictionary of parameters
-    used to create the model
+    Returns the model instance and a dictionary of parameters used to create it.
+
+    The model is loaded for inference only (compile=False): optimizer/compile
+    state is not restored, because restoring it requires eager execution and no
+    caller fine-tunes or re-evaluates a loaded model via keras.
     """
     if verbose:
         print("Loading bc model from ", model_dir)
 
-    # Load model from .keras file
-    model_path = os.path.join(model_dir, "model.keras")
-    model = keras.models.load_model(model_path, custom_objects={"tf": tf})
+    # Prefer a legacy H5 if present: it loads in both eager (v2) and graph (v1)
+    # mode, whereas the keras_v3 .keras zip fails inside rllib rollout workers
+    # which disable v2 behavior. Fall back to .keras if the H5 is absent or
+    # cannot be deserialized (e.g. a keras-3-format H5, or a partial write).
+    h5_path = os.path.join(model_dir, "model.h5")
+    keras_path = os.path.join(model_dir, "model.keras")
+    model = None
+    if os.path.exists(h5_path):
+        try:
+            model = keras.models.load_model(
+                h5_path, custom_objects={"tf": tf}, compile=False
+            )
+        except Exception as e:
+            if verbose:
+                print("Could not load model.h5, falling back to model.keras:", e)
+            model = None
+    if model is None:
+        model = keras.models.load_model(
+            keras_path, custom_objects={"tf": tf}, compile=False
+        )
 
     # Load metadata
     with open(os.path.join(model_dir, "metadata.pickle"), "rb") as f:
@@ -466,6 +506,44 @@ class BehaviorCloningPolicy(RllibPolicy):
         self.use_lstm = bc_params["use_lstm"]
         self.cell_size = bc_params["cell_size"]
 
+        # For the non-recurrent (pure MLP) model, precompute a numpy forward pass
+        # from the layer weights. rllib instantiates policies inside v1 graph
+        # contexts while the process default is eager; keras predict() is
+        # unreliable across that boundary, so we avoid it entirely for inference.
+        self._np_layers = None if self.use_lstm else self._extract_mlp_layers()
+
+    def _extract_mlp_layers(self):
+        """Return [(kernel, bias), ...] iff self.model is exactly the MLP built by
+        _build_model: a stack of Dense layers with ReLU on the hidden layers and a
+        linear output layer. Returns None for any other architecture so callers
+        fall back to keras. Verifying the structure (rather than assuming it)
+        prevents the numpy forward from silently emitting wrong logits if the
+        model architecture ever changes (non-Dense layer, no bias, other
+        activation)."""
+        try:
+            dense_layers = [
+                layer for layer in self.model.layers if layer.get_weights()
+            ]
+            if not dense_layers:
+                return None
+            extracted = []
+            for i, layer in enumerate(dense_layers):
+                if not isinstance(layer, keras.layers.Dense):
+                    return None
+                w = layer.get_weights()
+                if len(w) != 2:  # (kernel, bias) — use_bias must be True
+                    return None
+                activation = getattr(
+                    getattr(layer, "activation", None), "__name__", None
+                )
+                expected = "relu" if i < len(dense_layers) - 1 else "linear"
+                if activation != expected:
+                    return None
+                extracted.append((w[0], w[1]))
+            return extracted
+        except Exception:
+            return None
+
     def _setup_shapes(self):
         # This is here to make the class compatible with both tuples or gymnasium.Space objs for the spaces
         # Note: action_space = (len(Action.ALL_ACTIONS,)) is technically NOT the action space shape, which would be () since actions are scalars
@@ -587,7 +665,23 @@ class BehaviorCloningPolicy(RllibPolicy):
             logits = logits.reshape((logits.shape[0], -1))
             return logits, states
         else:
-            return self.model.predict(obs_batch, verbose=0), []
+            if self._np_layers is not None:
+                x = np.asarray(obs_batch, dtype=np.float32)
+                last = len(self._np_layers) - 1
+                for i, (kernel, bias) in enumerate(self._np_layers):
+                    x = x @ kernel + bias
+                    if i < last:
+                        x = np.maximum(x, 0.0)  # ReLU on hidden layers
+                return x, []
+            if tf.executing_eagerly():
+                return self.model.predict(obs_batch, verbose=0), []
+            # No numpy fast-path and not eager: keras predict() returns wrong
+            # logits under v1 graph mode, so fail loudly rather than silently
+            # feeding garbage actions into a rollout.
+            raise RuntimeError(
+                "BehaviorCloningPolicy could not build a numpy forward pass for "
+                "this model and cannot safely run keras predict() in graph mode."
+            )
 
 
 if __name__ == "__main__":
