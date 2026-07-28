@@ -164,6 +164,14 @@ agents and cannot be selected with a misleading one-agent label. Checkpoints
 store actor and critic separately, so the stage-one actor can warm-start the
 stage-two shared actor while the centralized critic is initialized fresh.
 
+Before actor or critic optimization begins, the trainer runs an executable
+preflight against the authoritative environment. It verifies the index and
+physical effect of all seven actions, exercises washing and fire suppression,
+checks every reward component, checks one- through four-agent masks, and
+confirms that vectorized masks change immediately after state transitions.
+The trainer fails closed on a non-binary or empty active mask. A passed report
+is written to `preflight.json` beside the checkpoints.
+
 ## 5. First one-map training milestone
 
 The first controlled experiment intentionally uses only **Cramped Galley**:
@@ -203,6 +211,15 @@ The fixed hyperparameter records are
 `configs/burger_ppo_1agent.yaml` and
 `configs/burger_mappo_2agent.yaml`. Smoke tests should use a separate output
 directory and must not be presented as learned-policy results.
+
+Every rollout records the frequency of all seven actions, the ratio of joint
+all-`STAY` steps, the ratio of joint steps that produce neither motion nor an
+agent-attributed environment event, the mean number of legal actions, and the
+total of every reward component. If the all-`STAY` ratio reaches `0.98` or the
+all-no-op ratio reaches `0.995` for three consecutive updates, training aborts
+before applying the next PPO update. Deterministic evaluation reports the same
+freeze indicators; stage acceptance additionally requires all-`STAY < 0.95`
+and all-no-op `< 0.98`.
 
 ## 6. PPO/MAPPO configuration
 
@@ -244,7 +261,10 @@ cannot farm intermediate steps.
 Invalid or repeated interactions receive zero event reward. Do not add a
 handoff bonus to the final training objective: the policy must value handoffs
 only through their effect on valid recipe progress and delivery throughput.
-The terminal potential is forced to zero.
+The shaping `gamma` is materialized from the same `TrainConfig.gamma` used by
+PPO, and the terminal potential is forced to zero. This preserves
+potential-based policy invariance: pickup/drop cycles telescope instead of
+creating a repeatable positive-reward loop.
 
 ## 8. Required metrics
 

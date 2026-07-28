@@ -273,6 +273,14 @@ class BurgerMAPPOEnv:
             self.num_players :,
             Action.ACTION_TO_INDEX[Action.STAY],
         ] = 1.0
+        active = available[: self.num_players]
+        stay_index = Action.ACTION_TO_INDEX[Action.STAY]
+        if np.any(active.sum(axis=-1) < 1) or np.any(
+            active[:, stay_index] != 1
+        ):
+            raise RuntimeError(
+                "Active action mask froze or removed the STAY fallback"
+            )
         return available
 
     def local_observations(self) -> np.ndarray:

@@ -85,9 +85,20 @@ reward:
   time_step: -0.01
   potential_based_shaping:
     formula: gamma_phi_next_minus_phi
+    gamma_must_equal_optimization_gamma: true
     terminal_potential: 0.0
   invalid_or_repeated_interaction: 0.0
   trash_disposal_event: 0.0
+
+training_safety:
+  preflight_required: true
+  check_all_seven_action_effects: true
+  check_reward_breakdown_sum: true
+  refresh_action_mask_after_every_step: true
+  reject_non_binary_or_empty_active_masks: true
+  max_all_agents_stay_ratio: 0.98
+  max_all_agents_noop_ratio: 0.995
+  action_freeze_patience_updates: 3
 
 failure_replay:
   trajectory_seconds_before: 10
@@ -123,3 +134,8 @@ evaluation:
     - p90_fire_recovery_time
     - deadlock_rate
     - cross_play_score
+    - action_fraction_per_action
+    - all_agents_stay_ratio
+    - all_agents_noop_ratio
+    - mean_legal_actions
+    - reward_component_totals

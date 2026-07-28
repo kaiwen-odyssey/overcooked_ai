@@ -123,4 +123,11 @@ An environment revision is blocked if any of these tests fail:
 - no positive reward from repeated invalid interaction;
 - action-mask decisions use only local-visible state and sampled PPO actions
   always belong to the recorded mask;
+- vectorized action masks are replaced after every environment step and reset,
+  never cached from an earlier state;
+- all seven action indices pass executable effect checks before optimization;
+- every sampled team reward equals the sum of `correct_delivery`,
+  `fire_started`, `collision`, `time_step`, and potential shaping;
+- potential shaping uses the exact PPO discount factor, and sustained
+  all-`STAY` or all-no-op rollouts abort training;
 - randomized long-horizon invariant checks.

@@ -104,6 +104,33 @@ class TestBurgerMAPPOContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Inactive"):
             env.step([stay, stay, interact, stay])
 
+    def test_active_action_masks_never_freeze_during_rollout(self):
+        stay = Action.ACTION_TO_INDEX[Action.STAY]
+        for num_players in range(1, MAX_AGENTS + 1):
+            with self.subTest(num_players=num_players):
+                env = BurgerMAPPOEnv(num_players=num_players)
+                _, _, available = env.reset(seed=20260728)
+                for step in range(128):
+                    self.assertTrue(
+                        np.all(
+                            available[:num_players].sum(axis=-1) >= 1
+                        )
+                    )
+                    self.assertTrue(
+                        np.all(
+                            available[:num_players, stay] == 1
+                        )
+                    )
+                    actions = np.full(
+                        MAX_AGENTS, stay, dtype=np.int64
+                    )
+                    for agent in range(num_players):
+                        legal = np.flatnonzero(available[agent])
+                        actions[agent] = legal[
+                            (step + agent) % len(legal)
+                        ]
+                    available = env.step(actions)[-1]
+
     def test_step_returns_shared_team_reward_and_agent_masks(self):
         env = BurgerMAPPOEnv(num_players=3)
         stay = Action.ACTION_TO_INDEX[Action.STAY]

@@ -15,8 +15,8 @@ environment:
   episode_seconds: 180
   cook_steps: 24
   ready_pickup_window_steps: 16
+  wash_steps: 10
   plate_return_steps: 12
-  fire_started_penalty: -5.0
   actor_observation: local_world_aligned_26x9x9
   critic_observation: authoritative_global_state
 
@@ -33,8 +33,25 @@ training:
   ppo_clip: 0.20
   entropy_coefficient: 0.01
   max_grad_norm: 10.0
+  preflight_required: true
+  max_all_agents_stay_ratio: 0.98
+  max_all_agents_noop_ratio: 0.995
+  action_freeze_patience_updates: 3
+
+reward:
+  source: validated_environment_events_only
+  correct_delivery: 20.0
+  fire_started: -5.0
+  blocked_or_collision: -0.05
+  time_step: -0.01
+  potential_scale: 1.0
+  potential_gamma_must_equal_training_gamma: true
+  invalid_or_repeated_interaction: 0.0
 
 acceptance_gate:
+  preflight_status: passed
   deterministic_fixed_start_episodes: 20
   minimum_mean_deliveries_per_180s: 1.0
+  max_eval_all_agents_stay_ratio: 0.95
+  max_eval_all_agents_noop_ratio: 0.98
   compare_against: random_policy

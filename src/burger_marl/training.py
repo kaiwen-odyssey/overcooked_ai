@@ -26,7 +26,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.distributions import Categorical
 
-from burger_marl.actions import Action
+from burger_marl.actions import Action, Direction
 from burger_marl.mappo_env import (
     BurgerMAPPOEnv,
     MAX_AGENTS,
@@ -39,9 +39,13 @@ from burger_marl.env import (
     LETTUCE_DISPENSER,
     PLATE_RACK,
     SERVE,
+    SINK,
     BurgerConfig,
     BurgerGridworld,
+    BurgerPlayerState,
     BurgerRewardConfig,
+    GrillState,
+    SinkState,
 )
 
 
@@ -71,8 +75,16 @@ class TrainConfig:
     horizon: int = 429
     cook_steps: int = 24
     burn_steps: int = 16
+    wash_steps: int = 10
     plate_return_steps: int = 12
+    correct_delivery_reward: float = 20.0
     fire_started_penalty: float = -5.0
+    collision_penalty: float = -0.05
+    time_step_penalty: float = -0.01
+    potential_scale: float = 1.0
+    max_all_agents_stay_ratio: float = 0.98
+    max_all_agents_noop_ratio: float = 0.995
+    action_freeze_patience_updates: int = 3
     eval_episodes: int = 5
     eval_interval_updates: int = 20
     checkpoint_interval_updates: int = 20
@@ -110,15 +122,33 @@ class TrainConfig:
             "horizon": self.horizon,
             "cook_steps": self.cook_steps,
             "burn_steps": self.burn_steps,
+            "wash_steps": self.wash_steps,
             "plate_return_steps": self.plate_return_steps,
             "bc_batch_size": self.bc_batch_size,
             "bc_learning_rate": self.bc_learning_rate,
+            "action_freeze_patience_updates": self.action_freeze_patience_updates,
         }
         invalid = [name for name, value in positive.items() if value <= 0]
         if invalid:
             raise ValueError("Training values must be positive: {}".format(invalid))
         if self.fire_started_penalty > 0:
             raise ValueError("fire_started_penalty must not be positive")
+        if self.collision_penalty > 0:
+            raise ValueError("collision_penalty must not be positive")
+        if self.time_step_penalty > 0:
+            raise ValueError("time_step_penalty must not be positive")
+        if self.correct_delivery_reward <= 0:
+            raise ValueError("correct_delivery_reward must be positive")
+        if self.potential_scale < 0:
+            raise ValueError("potential_scale must not be negative")
+        if not 0 < self.gamma <= 1:
+            raise ValueError("gamma must be in (0, 1]")
+        if not 0 <= self.gae_lambda <= 1:
+            raise ValueError("gae_lambda must be in [0, 1]")
+        if not 0 <= self.max_all_agents_stay_ratio <= 1:
+            raise ValueError("max_all_agents_stay_ratio must be in [0, 1]")
+        if not 0 <= self.max_all_agents_noop_ratio <= 1:
+            raise ValueError("max_all_agents_noop_ratio must be in [0, 1]")
         if self.bc_pretrain_steps < 0:
             raise ValueError("bc_pretrain_steps must not be negative")
         if self.bc_aux_coef < 0:
@@ -198,6 +228,12 @@ def _masked_logits(
 
     if logits.shape != available_actions.shape:
         raise ValueError("Action-mask shape must match actor logits")
+    if not torch.all(torch.isfinite(available_actions)):
+        raise ValueError("Action mask must contain only finite values")
+    if torch.any(
+        (available_actions != 0) & (available_actions != 1)
+    ):
+        raise ValueError("Action mask must be binary")
     if torch.any(available_actions.sum(dim=-1) < 1):
         raise ValueError("Every active actor needs at least one legal action")
     return logits.masked_fill(
@@ -222,7 +258,26 @@ class Rollout:
     completed_deliveries: List[int]
     collision_events: int
     fire_events: int
+    action_counts: Tuple[int, ...]
+    all_agents_stay_steps: int
+    all_agents_noop_steps: int
+    joint_steps: int
+    legal_action_slots: int
+    actor_slots: int
+    reward_component_totals: Dict[str, float]
     environment_seconds: float
+
+    @property
+    def all_agents_stay_ratio(self) -> float:
+        return self.all_agents_stay_steps / max(self.joint_steps, 1)
+
+    @property
+    def all_agents_noop_ratio(self) -> float:
+        return self.all_agents_noop_steps / max(self.joint_steps, 1)
+
+    @property
+    def mean_legal_actions(self) -> float:
+        return self.legal_action_slots / max(self.actor_slots, 1)
 
 
 @dataclass(frozen=True)
@@ -242,11 +297,298 @@ def environment_config(config: TrainConfig) -> BurgerConfig:
         horizon=config.horizon,
         cook_steps=config.cook_steps,
         burn_steps=config.burn_steps,
+        wash_steps=config.wash_steps,
         plate_return_steps=config.plate_return_steps,
         reward=BurgerRewardConfig(
+            correct_delivery=config.correct_delivery_reward,
             fire_started=config.fire_started_penalty,
+            collision=config.collision_penalty,
+            time_step=config.time_step_penalty,
+            potential_scale=config.potential_scale,
+            gamma=config.gamma,
         ),
     )
+
+
+def audit_training_contract(config: TrainConfig) -> Dict[str, object]:
+    """Fail closed unless every PPO action and reward source is coherent."""
+
+    burger_config = environment_config(config)
+    mdp = BurgerGridworld(config=burger_config)
+    expected_actions = (
+        Direction.NORTH,
+        Direction.SOUTH,
+        Direction.EAST,
+        Direction.WEST,
+        Action.STAY,
+        Action.PICK_DROP,
+        Action.PROCESS,
+    )
+    if tuple(Action.INDEX_TO_ACTION) != expected_actions:
+        raise RuntimeError("Seven-action index contract changed")
+
+    reward_keys = {
+        "correct_delivery",
+        "fire_started",
+        "collision",
+        "time_step",
+        "potential",
+    }
+
+    def assert_reward(transition: object) -> Dict[str, float]:
+        breakdown = dict(transition.info["reward_breakdown"])
+        if set(breakdown) != reward_keys:
+            raise RuntimeError("Reward breakdown contract changed")
+        if not all(math.isfinite(float(value)) for value in breakdown.values()):
+            raise RuntimeError("Reward breakdown contains a non-finite value")
+        if not math.isclose(
+            float(transition.reward),
+            sum(float(value) for value in breakdown.values()),
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            raise RuntimeError("Environment reward does not equal its breakdown")
+        return breakdown
+
+    def station_position(terrain: str) -> Tuple[int, int]:
+        matches = [
+            (x, y)
+            for y, row in enumerate(mdp.layout.rows)
+            for x, cell in enumerate(row)
+            if cell == terrain
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Expected one {!r} station, got {}".format(terrain, matches)
+            )
+        return matches[0]
+
+    def adjacent_floor(target: Tuple[int, int]) -> Tuple[int, int]:
+        matches = [
+            Action.move_in_direction(target, direction)
+            for direction in Direction.ALL_DIRECTIONS
+            if mdp.layout.terrain_at(
+                Action.move_in_direction(target, direction)
+            )
+            == FLOOR
+        ]
+        if not matches:
+            raise RuntimeError("No adjacent floor for station {}".format(target))
+        return matches[0]
+
+    action_effects: Dict[str, str] = {}
+    for name, direction in (
+        ("north", Direction.NORTH),
+        ("south", Direction.SOUTH),
+        ("east", Direction.EAST),
+        ("west", Direction.WEST),
+    ):
+        move_pair = next(
+            (
+                (source, Action.move_in_direction(source, direction))
+                for source in sorted(mdp.layout.valid_player_positions)
+                if Action.move_in_direction(source, direction)
+                in mdp.layout.valid_player_positions
+            ),
+            None,
+        )
+        if move_pair is None:
+            raise RuntimeError("No representative {} movement".format(name))
+        state = mdp.get_standard_start_state(1)
+        state.players[0].position = move_pair[0]
+        transition = mdp.get_state_transition(state, [direction])
+        assert_reward(transition)
+        if transition.state.players[0].position != move_pair[1]:
+            raise RuntimeError("{} movement did not advance one cell".format(name))
+        action_effects[name] = "one_cardinal_floor_cell"
+
+    state = mdp.get_standard_start_state(1)
+    old_position = state.players[0].position
+    stayed = mdp.get_state_transition(state, [Action.STAY])
+    stay_reward = assert_reward(stayed)
+    if stayed.state.players[0].position != old_position:
+        raise RuntimeError("STAY changed player position")
+    if stay_reward["time_step"] != burger_config.reward.time_step:
+        raise RuntimeError("STAY did not receive the configured time cost")
+    action_effects["stay"] = "position_unchanged_environment_clock_advances"
+
+    picked = mdp.get_state_transition(
+        mdp.get_standard_start_state(1),
+        [Action.PICK_DROP],
+    )
+    pickup_reward = assert_reward(picked)
+    if picked.state.players[0].held_object != "bun":
+        raise RuntimeError("PICK_DROP did not pick the adjacent bun")
+    if "dispenser_pickup" not in {
+        str(event["type"]) for event in picked.info["events"]
+    }:
+        raise RuntimeError("PICK_DROP did not emit its physical transfer event")
+    if pickup_reward["correct_delivery"] != 0:
+        raise RuntimeError("Ingredient pickup received sparse delivery reward")
+    action_effects["pick_drop"] = "one_adjacent_physical_transfer"
+
+    repeated = mdp.get_state_transition(
+        picked.state,
+        [Action.PICK_DROP],
+    )
+    repeated_reward = assert_reward(repeated)
+    if repeated.info["events"]:
+        raise RuntimeError("Invalid repeated interaction emitted an event")
+    if any(
+        repeated_reward[name] != 0
+        for name in ("correct_delivery", "fire_started", "collision")
+    ):
+        raise RuntimeError("Invalid repeated interaction received event reward")
+    if repeated.reward > 0:
+        raise RuntimeError("Invalid repeated interaction produced positive reward")
+
+    sink_state = mdp.get_standard_start_state(1)
+    sink_state.players[0].position = adjacent_floor(
+        station_position(SINK)
+    )
+    sink_state.clean_plates -= 1
+    sink_state.sink = SinkState(
+        has_dirty_plate=True,
+        wash_progress=0,
+        washing_player=0,
+    )
+    washed = mdp.get_state_transition(sink_state, [Action.PROCESS])
+    assert_reward(washed)
+    if washed.state.sink.wash_progress != 1:
+        raise RuntimeError("PROCESS did not advance washing by exactly one tick")
+
+    fire_state = mdp.get_standard_start_state(1)
+    fire_state.players[0] = BurgerPlayerState(
+        adjacent_floor(station_position(GRILL)),
+        Direction.NORTH,
+        "extinguisher",
+    )
+    fire_state.extinguisher_available = False
+    fire_state.grill = GrillState(
+        food="burnt_beef",
+        cook_ticks=burger_config.cook_steps,
+        ready_ticks=burger_config.burn_steps,
+    )
+    extinguished = mdp.get_state_transition(
+        fire_state, [Action.PROCESS]
+    )
+    assert_reward(extinguished)
+    if extinguished.state.grill.food is not None:
+        raise RuntimeError("PROCESS did not clear the burning grill")
+    action_effects["process"] = "one_adjacent_wash_tick_or_fire_suppression"
+
+    delivery_state = mdp.get_standard_start_state(1)
+    delivery_state.players[0] = BurgerPlayerState(
+        adjacent_floor(station_position(SERVE)),
+        Direction.NORTH,
+        "plated_burger",
+    )
+    delivery_state.clean_plates -= 1
+    delivered = mdp.get_state_transition(
+        delivery_state, [Action.PICK_DROP]
+    )
+    delivery_reward = assert_reward(delivered)
+    if (
+        delivered.state.delivered_orders != 1
+        or delivery_reward["correct_delivery"]
+        != burger_config.reward.correct_delivery
+    ):
+        raise RuntimeError("Correct delivery sparse reward is inconsistent")
+
+    fire_started_state = mdp.get_standard_start_state(1)
+    fire_started_state.grill = GrillState(
+        food="cooked_beef",
+        cook_ticks=burger_config.cook_steps,
+        ready_ticks=burger_config.burn_steps - 1,
+    )
+    fire_started = mdp.get_state_transition(
+        fire_started_state, [Action.STAY]
+    )
+    fire_reward = assert_reward(fire_started)
+    if fire_reward["fire_started"] != burger_config.reward.fire_started:
+        raise RuntimeError("Fire penalty is not applied exactly once")
+
+    collision_state = mdp.get_standard_start_state(3)
+    collision_state.players[0].position = (0, 1)
+    collision_state.players[1].position = (2, 1)
+    collision_state.players[2].position = (0, 2)
+    collision = mdp.get_state_transition(
+        collision_state,
+        [Direction.EAST, Direction.WEST, Direction.EAST],
+    )
+    collision_reward = assert_reward(collision)
+    if collision_reward["collision"] != burger_config.reward.collision:
+        raise RuntimeError("Collision penalty does not match configuration")
+    if collision.state.players[2].position != (1, 2):
+        raise RuntimeError("A local collision froze an unrelated agent")
+
+    initial = mdp.get_standard_start_state(1)
+    old_phi = mdp.potential(initial)
+    shaped = mdp.get_state_transition(initial, [Action.PICK_DROP])
+    shaped_reward = assert_reward(shaped)
+    expected_shaping = burger_config.reward.potential_scale * (
+        config.gamma * mdp.potential(shaped.state) - old_phi
+    )
+    if not math.isclose(
+        shaped_reward["potential"],
+        expected_shaping,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise RuntimeError("Potential shaping gamma differs from PPO gamma")
+
+    for active_agents in range(1, MAX_AGENTS + 1):
+        adapter = BurgerMAPPOEnv(
+            mdp=BurgerGridworld(config=burger_config),
+            num_players=active_agents,
+        )
+        _, _, masks = adapter.reset(seed=config.seed)
+        stay_index = Action.ACTION_TO_INDEX[Action.STAY]
+        active_masks = masks[:active_agents]
+        if np.any(active_masks.sum(axis=-1) < 1):
+            raise RuntimeError("An active agent received an all-zero action mask")
+        if np.any(active_masks[:, stay_index] != 1):
+            raise RuntimeError("STAY must remain legal for every active agent")
+        inactive_masks = masks[active_agents:]
+        if inactive_masks.size and (
+            np.any(inactive_masks[:, stay_index] != 1)
+            or np.any(inactive_masks.sum(axis=-1) != 1)
+        ):
+            raise RuntimeError("Inactive agent masks must contain only STAY")
+
+    vector_probe = BurgerVectorEnv(
+        num_envs=1,
+        num_agents=1,
+        burger_config=burger_config,
+    )
+    pick_drop_index = Action.ACTION_TO_INDEX[Action.PICK_DROP]
+    stay_index = Action.ACTION_TO_INDEX[Action.STAY]
+    if vector_probe.available_actions[0, 0, pick_drop_index] != 1:
+        raise RuntimeError("Initial adjacent pickup is unexpectedly masked")
+    probe_actions = np.full((1, MAX_AGENTS), stay_index, dtype=np.int64)
+    probe_actions[0, 0] = pick_drop_index
+    vector_probe.step(probe_actions)
+    if vector_probe.available_actions[0, 0, pick_drop_index] != 0:
+        raise RuntimeError("Vector environment retained a stale action mask")
+
+    return {
+        "status": "passed",
+        "action_count": len(action_effects),
+        "actions": action_effects,
+        "reward_components": {
+            "correct_delivery": burger_config.reward.correct_delivery,
+            "fire_started": burger_config.reward.fire_started,
+            "collision": burger_config.reward.collision,
+            "time_step": burger_config.reward.time_step,
+            "potential_scale": burger_config.reward.potential_scale,
+            "potential_gamma": burger_config.reward.gamma,
+        },
+        "active_masks_never_empty": True,
+        "vector_masks_refresh_after_step": True,
+        "unrelated_agents_continue_after_local_collision": True,
+        "invalid_interactions_have_no_positive_reward": True,
+        "potential_gamma_matches_ppo_gamma": True,
+    }
 
 
 def generate_single_agent_expert_demo(config: TrainConfig) -> ExpertDemo:
@@ -411,6 +753,7 @@ class BurgerVectorEnv:
         ]
         observations = np.stack([item[0] for item in transitions])
         shared = np.stack([item[1] for item in transitions])
+        available_actions = np.stack([item[5] for item in transitions])
         rewards = np.asarray(
             [item[2][0, 0] for item in transitions], dtype=np.float32
         )
@@ -428,10 +771,11 @@ class BurgerVectorEnv:
                 reset_obs, reset_shared, reset_available = self.envs[index].reset()
                 observations[index] = reset_obs
                 shared[index] = reset_shared
-                self.available_actions[index] = reset_available
+                available_actions[index] = reset_available
 
         self.observations = observations
         self.shared_observations = shared
+        self.available_actions = available_actions
         return observations, shared, rewards, dones, infos
 
 
@@ -440,6 +784,7 @@ class PPOTrainer:
 
     def __init__(self, config: TrainConfig) -> None:
         self.config = config
+        self.preflight = audit_training_contract(config)
         _seed_everything(config.seed, config.deterministic_torch)
         self.device = _resolve_device(config.device)
         probe = BurgerMAPPOEnv(
@@ -478,6 +823,7 @@ class PPOTrainer:
         ).repeat(config.num_envs)
         self.global_step = 0
         self.update = 0
+        self.action_freeze_streak = 0
 
     def _behavior_cloning_loss(self, batch_size: int) -> torch.Tensor:
         if self.expert_demo is None:
@@ -584,6 +930,19 @@ class PPOTrainer:
         completed_deliveries: List[int] = []
         collisions = 0
         fires = 0
+        action_counts = np.zeros(Action.NUM_ACTIONS, dtype=np.int64)
+        all_agents_stay_steps = 0
+        all_agents_noop_steps = 0
+        joint_steps = 0
+        legal_action_slots = 0
+        actor_slots = 0
+        reward_component_totals = {
+            "correct_delivery": 0.0,
+            "fire_started": 0.0,
+            "collision": 0.0,
+            "time_step": 0.0,
+            "potential": 0.0,
+        }
         collect_started = time.perf_counter()
         stay_index = Action.ACTION_TO_INDEX[Action.STAY]
 
@@ -614,6 +973,28 @@ class PPOTrainer:
             active_actions = distribution.sample()
             active_log_probs = distribution.log_prob(active_actions)
             team_values = self.critic(shared)
+            active_action_matrix = active_actions.view(
+                config.num_envs, config.num_agents
+            )
+            action_counts += np.bincount(
+                active_action_matrix.cpu().numpy().reshape(-1),
+                minlength=Action.NUM_ACTIONS,
+            )
+            all_agents_stay_steps += int(
+                torch.all(
+                    active_action_matrix == stay_index, dim=1
+                ).sum()
+            )
+            joint_steps += config.num_envs
+            legal_action_slots += int(available.sum().item())
+            actor_slots += config.num_envs * config.num_agents
+            old_positions = [
+                tuple(
+                    player.position
+                    for player in vector_env.state.players
+                )
+                for vector_env in self.vector_env.envs
+            ]
 
             joint_actions = np.full(
                 (config.num_envs, MAX_AGENTS),
@@ -621,7 +1002,7 @@ class PPOTrainer:
                 dtype=np.int64,
             )
             joint_actions[:, : config.num_agents] = (
-                active_actions.view(config.num_envs, config.num_agents)
+                active_action_matrix
                 .cpu()
                 .numpy()
             )
@@ -651,8 +1032,34 @@ class PPOTrainer:
                     str(event["type"])
                     for event in infos[0].get("events", ())
                 ]
+                new_positions = tuple(
+                    player.position
+                    for player in self.vector_env.envs[env_index].state.players
+                )
+                agent_event = any(
+                    "agent" in event or "agents" in event
+                    for event in infos[0].get("events", ())
+                )
+                if (
+                    not done
+                    and new_positions == old_positions[env_index]
+                    and not agent_event
+                ):
+                    all_agents_noop_steps += 1
                 collisions += event_types.count("collision")
                 fires += event_types.count("fire_started")
+                breakdown = infos[0]["reward_breakdown"]
+                if not math.isclose(
+                    float(reward_batch[env_index]),
+                    sum(float(value) for value in breakdown.values()),
+                    rel_tol=0.0,
+                    abs_tol=1e-5,
+                ):
+                    raise RuntimeError(
+                        "Rollout reward differs from environment breakdown"
+                    )
+                for name in reward_component_totals:
+                    reward_component_totals[name] += float(breakdown[name])
                 if done:
                     completed_returns.append(
                         float(self.vector_env.episode_returns[env_index])
@@ -708,11 +1115,19 @@ class PPOTrainer:
             completed_deliveries=completed_deliveries,
             collision_events=collisions,
             fire_events=fires,
+            action_counts=tuple(int(value) for value in action_counts),
+            all_agents_stay_steps=all_agents_stay_steps,
+            all_agents_noop_steps=all_agents_noop_steps,
+            joint_steps=joint_steps,
+            legal_action_slots=legal_action_slots,
+            actor_slots=actor_slots,
+            reward_component_totals=reward_component_totals,
             environment_seconds=time.perf_counter() - collect_started,
         )
 
     def update_policy(self, rollout: Rollout) -> Dict[str, float]:
         config = self.config
+        rollout_health = self._rollout_health_metrics(rollout)
         transition_count = config.rollout_length * config.num_envs
         if transition_count < config.num_minibatches:
             raise ValueError("num_minibatches exceeds rollout transitions")
@@ -840,7 +1255,62 @@ class PPOTrainer:
 
         return {
             name: float(np.mean(values)) for name, values in metrics.items()
+        } | rollout_health
+
+    def _rollout_health_metrics(
+        self, rollout: Rollout
+    ) -> Dict[str, float]:
+        frozen = (
+            rollout.all_agents_stay_ratio
+            >= self.config.max_all_agents_stay_ratio
+            or rollout.all_agents_noop_ratio
+            >= self.config.max_all_agents_noop_ratio
+        )
+        self.action_freeze_streak = (
+            self.action_freeze_streak + 1 if frozen else 0
+        )
+        if (
+            self.action_freeze_streak
+            >= self.config.action_freeze_patience_updates
+        ):
+            raise RuntimeError(
+                "Action-freeze gate failed for {} consecutive updates: "
+                "all_stay={:.4f}, all_noop={:.4f}".format(
+                    self.action_freeze_streak,
+                    rollout.all_agents_stay_ratio,
+                    rollout.all_agents_noop_ratio,
+                )
+            )
+
+        total_actions = max(sum(rollout.action_counts), 1)
+        names = (
+            "north",
+            "south",
+            "east",
+            "west",
+            "stay",
+            "pick_drop",
+            "process",
+        )
+        result = {
+            "rollout_all_agents_stay_ratio": rollout.all_agents_stay_ratio,
+            "rollout_all_agents_noop_ratio": rollout.all_agents_noop_ratio,
+            "rollout_mean_legal_actions": rollout.mean_legal_actions,
+            "action_freeze_streak": float(self.action_freeze_streak),
         }
+        result.update(
+            {
+                "action_fraction_{}".format(name): count / total_actions
+                for name, count in zip(names, rollout.action_counts)
+            }
+        )
+        result.update(
+            {
+                "reward_component_{}".format(name): float(value)
+                for name, value in rollout.reward_component_totals.items()
+            }
+        )
+        return result
 
     def save_checkpoint(self, output_dir: Path, label: str) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -874,6 +1344,10 @@ def evaluate_policy(
     deliveries: List[int] = []
     collisions: List[int] = []
     fires: List[int] = []
+    action_counts = np.zeros(Action.NUM_ACTIONS, dtype=np.int64)
+    all_agents_stay_steps = 0
+    all_agents_noop_steps = 0
+    evaluation_steps = 0
     stay_index = Action.ACTION_TO_INDEX[Action.STAY]
     actor.eval()
 
@@ -908,6 +1382,16 @@ def evaluate_policy(
                 .cpu()
                 .numpy()
             )
+            action_counts += np.bincount(
+                selected, minlength=Action.NUM_ACTIONS
+            )
+            all_agents_stay_steps += int(
+                np.all(selected == stay_index)
+            )
+            evaluation_steps += 1
+            old_positions = tuple(
+                player.position for player in env.state.players
+            )
             joint_actions = np.full(MAX_AGENTS, stay_index, dtype=np.int64)
             joint_actions[: config.num_agents] = selected
             (
@@ -924,6 +1408,15 @@ def evaluate_policy(
             event_types = [
                 str(event["type"]) for event in infos[0].get("events", ())
             ]
+            new_positions = tuple(
+                player.position for player in env.state.players
+            )
+            agent_event = any(
+                "agent" in event or "agents" in event
+                for event in infos[0].get("events", ())
+            )
+            if new_positions == old_positions and not agent_event:
+                all_agents_noop_steps += 1
             episode_collisions += event_types.count("collision")
             episode_fires += event_types.count("fire_started")
             done = bool(dones[0])
@@ -943,6 +1436,18 @@ def evaluate_policy(
         ),
         "eval_mean_collisions": float(np.mean(collisions)),
         "eval_mean_fires": float(np.mean(fires)),
+        "eval_stay_action_ratio": float(
+            action_counts[stay_index] / max(action_counts.sum(), 1)
+        ),
+        "eval_all_agents_stay_ratio": float(
+            all_agents_stay_steps / max(evaluation_steps, 1)
+        ),
+        "eval_all_agents_noop_ratio": float(
+            all_agents_noop_steps / max(evaluation_steps, 1)
+        ),
+        "eval_action_coverage": float(
+            np.count_nonzero(action_counts) / Action.NUM_ACTIONS
+        ),
     }
 
 
@@ -955,6 +1460,10 @@ def train(config: TrainConfig) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "config.json").write_text(
         json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "preflight.json").write_text(
+        json.dumps(trainer.preflight, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     metrics_path = output_dir / "metrics.csv"
@@ -1016,6 +1525,10 @@ def train(config: TrainConfig) -> Path:
                         "eval_deliveries_per_minute": float("nan"),
                         "eval_mean_collisions": float("nan"),
                         "eval_mean_fires": float("nan"),
+                        "eval_stay_action_ratio": float("nan"),
+                        "eval_all_agents_stay_ratio": float("nan"),
+                        "eval_all_agents_noop_ratio": float("nan"),
+                        "eval_action_coverage": float("nan"),
                     }
                 )
 
@@ -1038,6 +1551,7 @@ def train(config: TrainConfig) -> Path:
     final_path = trainer.save_checkpoint(output_dir, "final")
     summary = {
         "checkpoint": str(final_path),
+        "preflight": trainer.preflight,
         "elapsed_seconds": time.perf_counter() - training_started,
         "global_env_steps": trainer.global_step,
         "measured_steps_per_second": trainer.global_step
@@ -1096,8 +1610,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrainConfig:
     parser.add_argument("--horizon", type=int, default=429)
     parser.add_argument("--cook-steps", type=int, default=24)
     parser.add_argument("--burn-steps", type=int, default=16)
+    parser.add_argument("--wash-steps", type=int, default=10)
     parser.add_argument("--plate-return-steps", type=int, default=12)
+    parser.add_argument("--correct-delivery-reward", type=float, default=20.0)
     parser.add_argument("--fire-started-penalty", type=float, default=-5.0)
+    parser.add_argument("--collision-penalty", type=float, default=-0.05)
+    parser.add_argument("--time-step-penalty", type=float, default=-0.01)
+    parser.add_argument("--potential-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--max-all-agents-stay-ratio", type=float, default=0.98
+    )
+    parser.add_argument(
+        "--max-all-agents-noop-ratio", type=float, default=0.995
+    )
+    parser.add_argument(
+        "--action-freeze-patience-updates", type=int, default=3
+    )
     parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--eval-interval-updates", type=int, default=20)
     parser.add_argument("--checkpoint-interval-updates", type=int, default=20)
