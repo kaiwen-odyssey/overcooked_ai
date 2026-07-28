@@ -1,6 +1,8 @@
+import json
 import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -15,6 +17,8 @@ from burger_marl.training import (
     environment_config,
     evaluate_policy,
     generate_single_agent_expert_demo,
+    parse_args,
+    train,
 )
 
 
@@ -98,7 +102,7 @@ class TestBurgerPPOTrainer(unittest.TestCase):
         source = PPOTrainer(self._config())
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = source.save_checkpoint(
-                __import__("pathlib").Path(directory), "one_agent"
+                Path(directory), "one_agent"
             )
             target_config = TrainConfig(
                 **{
@@ -108,8 +112,35 @@ class TestBurgerPPOTrainer(unittest.TestCase):
             )
             target = PPOTrainer(target_config)
             for name, value in source.actor.state_dict().items():
+                if name == "agent_embedding.weight":
+                    continue
                 torch.testing.assert_close(
                     value.cpu(), target.actor.state_dict()[name].cpu()
+                )
+            source_embedding = (
+                source.actor.agent_embedding.weight[0].detach().cpu()
+            )
+            for embedding in target.actor.agent_embedding.weight:
+                torch.testing.assert_close(
+                    embedding.detach().cpu(), source_embedding
+                )
+
+    def test_mappo_actor_init_rejects_checkpoint_without_agent_metadata(self):
+        source = PPOTrainer(self._config())
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "actor_only.pt"
+            torch.save({"actor": source.actor.state_dict()}, checkpoint)
+
+            with self.assertRaisesRegex(
+                ValueError, "train_config.num_agents"
+            ):
+                PPOTrainer(
+                    TrainConfig(
+                        **{
+                            **self._config("mappo", 2).__dict__,
+                            "actor_init": str(checkpoint),
+                        }
+                    )
                 )
 
     def test_deterministic_evaluation_reports_sparse_separately(self):
@@ -132,6 +163,12 @@ class TestBurgerPPOTrainer(unittest.TestCase):
             self._config("ppo", 2)
         with self.assertRaises(ValueError):
             self._config("mappo", 1)
+        with self.assertRaisesRegex(ValueError, "one-agent PPO"):
+            TrainConfig(
+                algorithm="mappo",
+                num_agents=2,
+                bc_pretrain_steps=1,
+            )
 
     def test_checkpointed_config_materializes_grill_contract(self):
         config = self._config()
@@ -274,6 +311,122 @@ class TestBurgerPPOTrainer(unittest.TestCase):
         non_binary[0, 0] = 0.5
         with self.assertRaisesRegex(ValueError, "binary"):
             _masked_logits(logits, non_binary)
+
+    def test_nonfinite_gradient_aborts_before_optimizer_step(self):
+        trainer = PPOTrainer(self._config())
+        rollout = trainer.collect_rollout()
+        parameters_before = {
+            name: parameter.detach().clone()
+            for name, parameter in (
+                list(trainer.actor.named_parameters())
+                + [
+                    ("critic." + name, parameter)
+                    for name, parameter in trainer.critic.named_parameters()
+                ]
+            )
+        }
+        poisoned = replace(
+            rollout,
+            advantages=torch.full_like(
+                rollout.advantages, float("nan")
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "non-finite"):
+            trainer.update_policy(poisoned)
+        parameters_after = dict(trainer.actor.named_parameters()) | {
+            "critic." + name: parameter
+            for name, parameter in trainer.critic.named_parameters()
+        }
+        for name, parameter in parameters_after.items():
+            torch.testing.assert_close(
+                parameter.detach(), parameters_before[name]
+            )
+
+    def test_train_runs_requested_behavior_cloning_and_saves_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = TrainConfig(
+                total_env_steps=1,
+                num_envs=1,
+                rollout_length=1,
+                update_epochs=1,
+                num_minibatches=1,
+                hidden_size=16,
+                horizon=60,
+                eval_episodes=1,
+                eval_interval_updates=1,
+                checkpoint_interval_updates=1,
+                device="cpu",
+                output_dir=directory,
+                bc_pretrain_steps=1,
+                bc_batch_size=8,
+            )
+
+            checkpoint = train(config)
+            run_dir = checkpoint.parent
+            pretraining = json.loads(
+                (run_dir / "pretraining.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            summary = json.loads(
+                (run_dir / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertEqual(pretraining["bc_steps"], 1.0)
+            self.assertEqual(summary["pretraining"]["bc_steps"], 1.0)
+            self.assertTrue((run_dir / "pretrained.pt").exists())
+
+    def test_train_refuses_to_overwrite_an_existing_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = (
+                Path(directory) / "ppo_1agent_v2_seed20260728"
+            )
+            run_dir.mkdir()
+            sentinel = run_dir / "keep.txt"
+            sentinel.write_text("original", encoding="utf-8")
+            config = TrainConfig(
+                total_env_steps=1,
+                num_envs=1,
+                rollout_length=1,
+                update_epochs=1,
+                num_minibatches=1,
+                output_dir=directory,
+                device="cpu",
+            )
+
+            with self.assertRaisesRegex(
+                FileExistsError, "Refusing to overwrite"
+            ):
+                train(config)
+            self.assertEqual(
+                sentinel.read_text(encoding="utf-8"), "original"
+            )
+
+    def test_cli_exposes_behavior_cloning_controls(self):
+        config = parse_args(
+            [
+                "--algorithm",
+                "ppo",
+                "--num-agents",
+                "1",
+                "--bc-pretrain-steps",
+                "7",
+                "--bc-batch-size",
+                "16",
+                "--bc-learning-rate",
+                "0.002",
+                "--bc-aux-coef",
+                "0.1",
+            ]
+        )
+
+        self.assertEqual(config.bc_pretrain_steps, 7)
+        self.assertEqual(config.bc_batch_size, 16)
+        self.assertEqual(config.bc_learning_rate, 0.002)
+        self.assertEqual(config.bc_aux_coef, 0.1)
 
 
 if __name__ == "__main__":

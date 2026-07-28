@@ -178,7 +178,9 @@ is written to `preflight.json` beside the checkpoints.
 The first controlled experiment intentionally uses only **Cramped Galley**:
 
 1. Train one-agent PPO for 3 million environment transitions from random
-   initialization.
+   initialization. If exploration is insufficient, behavior-cloning
+   pretraining may be enabled explicitly from the legal scripted trajectory;
+   it is never applied silently.
 2. Accept stage one only if deterministic fixed-start evaluation averages at
    least one valid delivery per 180-second episode and exceeds a random policy.
 3. Warm-start the shared two-agent actor from the accepted one-agent actor.
@@ -202,16 +204,27 @@ Reference commands:
   --algorithm ppo --num-agents 1 --total-env-steps 3000000 \
   --num-envs 64 --rollout-length 256 --output-dir runs/burger
 
+# Optional one-agent warm start. The trainer records pretraining.json and
+# pretrained.pt before PPO begins.
+.venv/bin/python -m burger_marl.training \
+  --algorithm ppo --num-agents 1 --total-env-steps 3000000 \
+  --num-envs 64 --rollout-length 256 --bc-pretrain-steps 2000 \
+  --output-dir runs/burger_bc
+
 .venv/bin/python -m burger_marl.training \
   --algorithm mappo --num-agents 2 --total-env-steps 9000000 \
   --num-envs 64 --rollout-length 256 --output-dir runs/burger \
-  --actor-init runs/burger/ppo_1agent_seed20260728/final.pt
+  --actor-init runs/burger/ppo_1agent_v2_seed20260728/final.pt
 ```
 
 The fixed hyperparameter records are
 `configs/burger_ppo_1agent.yaml` and
 `configs/burger_mappo_2agent.yaml`. Smoke tests should use a separate output
-directory and must not be presented as learned-policy results.
+directory and must not be presented as learned-policy results. Run directories
+are immutable: the trainer rejects a non-empty destination instead of
+overwriting checkpoints or mixing metrics from different action contracts.
+When a one-agent actor initializes MAPPO, its learned identity embedding is
+copied into every newly active agent slot; the centralized critic is fresh.
 
 Every rollout records the frequency of all seven actions, the ratio of joint
 all-`STAY` steps, the ratio of joint steps that produce neither motion nor an

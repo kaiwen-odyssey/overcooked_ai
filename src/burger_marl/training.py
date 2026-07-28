@@ -119,11 +119,16 @@ class TrainConfig:
             "update_epochs": self.update_epochs,
             "num_minibatches": self.num_minibatches,
             "learning_rate": self.learning_rate,
+            "max_grad_norm": self.max_grad_norm,
+            "hidden_size": self.hidden_size,
             "horizon": self.horizon,
             "cook_steps": self.cook_steps,
             "burn_steps": self.burn_steps,
             "wash_steps": self.wash_steps,
             "plate_return_steps": self.plate_return_steps,
+            "eval_episodes": self.eval_episodes,
+            "eval_interval_updates": self.eval_interval_updates,
+            "checkpoint_interval_updates": self.checkpoint_interval_updates,
             "bc_batch_size": self.bc_batch_size,
             "bc_learning_rate": self.bc_learning_rate,
             "action_freeze_patience_updates": self.action_freeze_patience_updates,
@@ -145,6 +150,12 @@ class TrainConfig:
             raise ValueError("gamma must be in (0, 1]")
         if not 0 <= self.gae_lambda <= 1:
             raise ValueError("gae_lambda must be in [0, 1]")
+        if not 0 < self.clip_coef < 1:
+            raise ValueError("clip_coef must be in (0, 1)")
+        if self.value_coef < 0:
+            raise ValueError("value_coef must not be negative")
+        if self.entropy_coef < 0:
+            raise ValueError("entropy_coef must not be negative")
         if not 0 <= self.max_all_agents_stay_ratio <= 1:
             raise ValueError("max_all_agents_stay_ratio must be in [0, 1]")
         if not 0 <= self.max_all_agents_noop_ratio <= 1:
@@ -155,6 +166,12 @@ class TrainConfig:
             raise ValueError("bc_aux_coef must not be negative")
         if self.bc_aux_coef > 0 and self.bc_pretrain_steps == 0:
             raise ValueError("bc_aux_coef requires behavior-cloning pretraining")
+        if self.bc_pretrain_steps > 0 and self.num_agents != 1:
+            raise ValueError(
+                "Behavior-cloning pretraining supports one-agent PPO only"
+            )
+        if self.num_minibatches > self.num_envs * self.rollout_length:
+            raise ValueError("num_minibatches exceeds rollout transitions")
 
 
 class LocalActor(nn.Module):
@@ -906,7 +923,9 @@ class PPOTrainer:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(
-                self.actor.parameters(), self.config.max_grad_norm
+                self.actor.parameters(),
+                self.config.max_grad_norm,
+                error_if_nonfinite=True,
             )
             optimizer.step()
             losses.append(float(loss.detach()))
@@ -919,7 +938,7 @@ class PPOTrainer:
 
     def load_actor(self, checkpoint_path: str) -> None:
         checkpoint = torch.load(
-            checkpoint_path, map_location=self.device, weights_only=False
+            checkpoint_path, map_location=self.device, weights_only=True
         )
         state_dict = checkpoint.get("actor", checkpoint)
         missing, unexpected = self.actor.load_state_dict(
@@ -932,6 +951,32 @@ class PPOTrainer:
                     missing, unexpected
                 )
             )
+        train_config = checkpoint.get("train_config", {})
+        source_agents = (
+            train_config.get("num_agents")
+            if isinstance(train_config, dict)
+            else None
+        )
+        if self.config.num_agents > 1 and not (
+            isinstance(source_agents, int)
+            and 1 <= source_agents <= MAX_AGENTS
+        ):
+            raise ValueError(
+                "MAPPO actor initialization requires checkpoint "
+                "train_config.num_agents"
+            )
+        if (
+            isinstance(source_agents, int)
+            and 1 <= source_agents < self.config.num_agents
+        ):
+            with torch.no_grad():
+                embeddings = self.actor.agent_embedding.weight
+                trained_mean = embeddings[:source_agents].mean(
+                    dim=0, keepdim=True
+                )
+                embeddings[source_agents:].copy_(
+                    trained_mean.expand_as(embeddings[source_agents:])
+                )
 
     @torch.no_grad()
     def collect_rollout(self) -> Rollout:
@@ -1255,6 +1300,7 @@ class PPOTrainer:
                     list(self.actor.parameters())
                     + list(self.critic.parameters()),
                     config.max_grad_norm,
+                    error_if_nonfinite=True,
                 )
                 self.optimizer.step()
 
@@ -1470,11 +1516,22 @@ def evaluate_policy(
 
 
 def train(config: TrainConfig) -> Path:
-    trainer = PPOTrainer(config)
-    run_name = "{}_{}agent_seed{}".format(
+    run_name = "{}_{}agent_v2_seed{}".format(
         config.algorithm, config.num_agents, config.seed
     )
     output_dir = Path(config.output_dir) / run_name
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(
+            "Refusing to overwrite existing training run: {}. "
+            "Choose a new --output-dir.".format(output_dir)
+        )
+
+    trainer = PPOTrainer(config)
+    pretraining = (
+        trainer.pretrain_actor()
+        if config.bc_pretrain_steps > 0
+        else {"bc_steps": 0.0}
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "config.json").write_text(
         json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
@@ -1484,6 +1541,12 @@ def train(config: TrainConfig) -> Path:
         json.dumps(trainer.preflight, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    (output_dir / "pretraining.json").write_text(
+        json.dumps(pretraining, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if config.bc_pretrain_steps > 0:
+        trainer.save_checkpoint(output_dir, "pretrained")
     metrics_path = output_dir / "metrics.csv"
     updates = math.ceil(
         config.total_env_steps / (config.num_envs * config.rollout_length)
@@ -1570,6 +1633,7 @@ def train(config: TrainConfig) -> Path:
     summary = {
         "checkpoint": str(final_path),
         "preflight": trainer.preflight,
+        "pretraining": pretraining,
         "elapsed_seconds": time.perf_counter() - training_started,
         "global_env_steps": trainer.global_step,
         "measured_steps_per_second": trainer.global_step
@@ -1651,6 +1715,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrainConfig:
     parser.add_argument("--output-dir", default="runs/burger")
     parser.add_argument("--actor-init")
     parser.add_argument("--deterministic-torch", action="store_true")
+    parser.add_argument("--bc-pretrain-steps", type=int, default=0)
+    parser.add_argument("--bc-batch-size", type=int, default=128)
+    parser.add_argument("--bc-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--bc-aux-coef", type=float, default=0.0)
     return TrainConfig(**vars(parser.parse_args(argv)))
 
 
