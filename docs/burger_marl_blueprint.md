@@ -41,6 +41,9 @@ The following invariants are checked after every training step:
   partial burger is one plate object in a visible hand or counter position;
 - grill, sink, and plate-return timer bounds;
 - one sink owner and at most one wash tick per joint environment step;
+- a washed plate enters the washing agent's empty hand, and only a later
+  `PICK_DROP` at the plate rack adds it back to the visible stack;
+- exactly one extinguisher across its station, agent hands, and counters;
 - completed food can be rewarded only once because delivery consumes the held
   plated burger in the same transaction;
 - trash disposal is adjacent interaction only: loose food is deleted, loaded
@@ -72,7 +75,8 @@ step) and supports one to four agents.
    it has a 16-step pickup window (6.72 seconds); missing that window burns the
    patty, starts a fire, and locks the grill until a valid extinguisher
    interaction.
-3. Carry a clean plate to the ingredient dispensers, counters, and grill. Each
+3. Take one clean plate from the visible rack stack, decrementing that stack,
+   then carry it to the ingredient dispensers, counters, and grill. Each
    successful adjacent interaction transfers exactly one ingredient onto that
    same plate; bun and lettuce may also be carried loose, but cooked beef may
    leave the grill only by being collected onto a plate.
@@ -81,8 +85,10 @@ step) and supports one to four agents.
 5. The same physical plate returns dirty after 12 steps (5.04 seconds) at a
    separate dish-return hatch and joins its integer queue.
 6. Move exactly one dirty plate to the sink and spend 10 separate interaction
-   steps washing it before the next plate can begin.
-7. If the grill catches fire, fetch the extinguisher and interact from the
+   steps washing it. The clean plate finishes in that agent's hand and may be
+   returned to the rack, where up to all four clean plates can stack. Food and
+   loaded plates remain single objects on single-slot counters.
+7. If the grill catches fire, fetch the sole physical extinguisher and interact from the
    any cardinally adjacent floor cell.
 8. If an ingredient or plated meal must be abandoned, carry it to the trash
    station. A loaded plate is emptied but retained; disposal earns no positive

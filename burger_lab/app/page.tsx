@@ -580,6 +580,7 @@ type MotionState = {
   discardedItems: number;
   firesStarted: number;
   firesExtinguished: number;
+  extinguisherAtStation: boolean;
   grillFood: "raw-beef" | "cooked-beef" | "burnt-beef" | null;
   grillCookTicksRemaining: number;
   grillBurnTicksRemaining: number;
@@ -660,6 +661,7 @@ type WorldEffect = {
     to: FoodKind | null;
   };
   cleanPlateDelta?: number;
+  extinguisherStationDelta?: -1 | 1;
   grillAction?: "place-raw" | "take-cooked" | "extinguish";
   servedDelta?: number;
   discardedDelta?: number;
@@ -703,6 +705,18 @@ function countPhysicalPlates(state: MotionState) {
   );
 }
 
+function countPhysicalExtinguishers(state: MotionState) {
+  return (
+    Number(state.extinguisherAtStation) +
+    Object.values(state.counterObjects ?? {}).filter(
+      (item) => item === "extinguisher",
+    ).length +
+    state.agents.filter(
+      (agent) => agent.carrying === "extinguisher",
+    ).length
+  );
+}
+
 function createMotionState(paths: GridPoint[][]): MotionState {
   return {
     agents: paths.map((path, index) => ({
@@ -732,6 +746,7 @@ function createMotionState(paths: GridPoint[][]): MotionState {
     discardedItems: 0,
     firesStarted: 0,
     firesExtinguished: 0,
+    extinguisherAtStation: true,
     grillFood: null,
     grillCookTicksRemaining: 0,
     grillBurnTicksRemaining: 0,
@@ -773,13 +788,37 @@ function targetForAgent(
   if (agent.workKind === "washing" && agent.workTicksRemaining > 0) {
     return station("sink");
   }
+  const fireResponder = roles.safety ?? roles.cook;
+  if (
+    index === fireResponder &&
+    state.grillFood === "burnt-beef"
+  ) {
+    if (agent.carrying === "extinguisher") return station("grill");
+    if (agent.carrying === "clean-plate") return station("plate");
+    if (agent.carrying !== null) {
+      const emptyCounterIndex = map.counters.findIndex(
+        (_, counterIndex) =>
+          state.counterObjects[counterIndex] === undefined,
+      );
+      if (emptyCounterIndex >= 0) {
+        return map.counters[emptyCounterIndex];
+      }
+      if (trashDiscardableItems.has(agent.carrying)) {
+        return station("trash");
+      }
+      return null;
+    }
+    return state.extinguisherAtStation
+      ? station("extinguisher")
+      : null;
+  }
   if (index === roles.safety) {
     if (agent.carrying === "extinguisher") {
-      return state.grillFood === "burnt-beef"
-        ? station("grill")
-        : map.counters[5];
+      return map.counters[5];
     }
-    if (agent.carrying === null) return station("extinguisher");
+    if (agent.carrying === null && state.extinguisherAtStation) {
+      return station("extinguisher");
+    }
   }
   if (index === roles.dish) {
     if (agent.carrying === "dirty-plate") return station("sink");
@@ -801,16 +840,6 @@ function targetForAgent(
   }
 
   if (index === roles.cook) {
-    if (state.grillFood === "burnt-beef") {
-      if (agent.carrying === "extinguisher") return station("grill");
-      if (
-        agent.carrying !== null &&
-        trashDiscardableItems.has(agent.carrying)
-      ) {
-        return station("trash");
-      }
-      if (agent.carrying === null) return station("extinguisher");
-    }
     if (agent.carrying === "extinguisher") return station("extinguisher");
     if (agent.carrying === "raw-beef") return station("grill");
     if (agent.carrying === null && state.grillFood === null) {
@@ -941,10 +970,12 @@ function resolveAgentInteraction(
     | "cleanPlatesAtRack"
     | "grillFood"
     | "dirtyPlatesInSink"
+    | "extinguisherAtStation"
   >,
 ): InteractionResolution {
   const roles = roleIndices(activeCount);
   const grillNeedsRecovery = worldState.grillFood === "burnt-beef";
+  const fireResponder = roles.safety ?? roles.cook;
 
   if (agent.workKind === "washing" && agent.workTicksRemaining > 0) {
     const workTicksRemaining = agent.workTicksRemaining - 1;
@@ -1060,6 +1091,67 @@ function resolveAgentInteraction(
     actionKind: "interaction" as const,
   });
 
+  if (index === fireResponder && grillNeedsRecovery) {
+    if (current.carrying === "clean-plate") {
+      const action = actAtStation("plate", () =>
+        interact(null, "PICK/DROP · 应急放回净盘", 0, {
+          cleanPlateDelta: 1,
+        }),
+      );
+      if (action) return action;
+    }
+    if (
+      current.carrying !== null &&
+      current.carrying !== "extinguisher"
+    ) {
+      const emptyCounterIndex = map.counters.findIndex(
+        (_, counterIndex) =>
+          worldState.counterObjects[counterIndex] === undefined,
+      );
+      if (emptyCounterIndex >= 0) {
+        const heldItem = current.carrying;
+        const action = actAtCounter(emptyCounterIndex, () =>
+          interact(
+            null,
+            `PICK/DROP · 起火应急放下${foodLabels[heldItem]}`,
+            0,
+            {
+              counterMutation: {
+                counterIndex: emptyCounterIndex,
+                from: null,
+                to: heldItem,
+              },
+            },
+          ),
+        );
+        if (action) return action;
+      }
+    }
+    if (
+      current.carrying === null &&
+      worldState.extinguisherAtStation
+    ) {
+      const action = actAtStation("extinguisher", () =>
+        interact("extinguisher", "PICK/DROP · 取唯一灭火器", 0, {
+          extinguisherStationDelta: -1,
+        }),
+      );
+      if (action) return action;
+    }
+    if (current.carrying === "extinguisher") {
+      const action = actAtStation("grill", () =>
+        interact(
+          "extinguisher",
+          "PROCESS · 煎台灭火",
+          0,
+          { grillAction: "extinguish" },
+          "PROCESS",
+        ),
+      );
+      if (action) return action;
+    }
+  }
+
   if (
     (index === roles.cook || index === roles.safety) &&
     grillNeedsRecovery &&
@@ -1082,27 +1174,15 @@ function resolveAgentInteraction(
   }
 
   if (index === roles.safety) {
-    if (grillNeedsRecovery && current.carrying === null) {
+    if (
+      !grillNeedsRecovery &&
+      current.carrying === null &&
+      worldState.extinguisherAtStation
+    ) {
       const action = actAtStation("extinguisher", () =>
-        interact("extinguisher", "PICK/DROP · 取灭火器"),
-      );
-      if (action) return action;
-    }
-    if (grillNeedsRecovery && current.carrying === "extinguisher") {
-      const action = actAtStation("grill", () =>
-        interact(
-          "extinguisher",
-          "PROCESS · 煎台灭火",
-          0,
-          { grillAction: "extinguish" },
-          "PROCESS",
-        ),
-      );
-      if (action) return action;
-    }
-    if (!grillNeedsRecovery && current.carrying === null) {
-      const action = actAtStation("extinguisher", () =>
-        interact("extinguisher", "PICK/DROP · 取灭火器"),
+        interact("extinguisher", "PICK/DROP · 取唯一灭火器", 0, {
+          extinguisherStationDelta: -1,
+        }),
       );
       if (action) return action;
     }
@@ -1201,27 +1281,11 @@ function resolveAgentInteraction(
   }
 
   if (index === roles.cook) {
-    if (grillNeedsRecovery && current.carrying === null) {
-      const action = actAtStation("extinguisher", () =>
-        interact("extinguisher", "PICK/DROP · 取灭火器"),
-      );
-      if (action) return action;
-    }
-    if (grillNeedsRecovery && current.carrying === "extinguisher") {
-      const action = actAtStation("grill", () =>
-        interact(
-          "extinguisher",
-          "PROCESS · 煎台灭火",
-          0,
-          { grillAction: "extinguish" },
-          "PROCESS",
-        ),
-      );
-      if (action) return action;
-    }
     if (!grillNeedsRecovery && current.carrying === "extinguisher") {
       const action = actAtStation("extinguisher", () =>
-        interact(null, "PICK/DROP · 归还灭火器"),
+        interact(null, "PICK/DROP · 归还唯一灭火器", 0, {
+          extinguisherStationDelta: 1,
+        }),
       );
       if (action) return action;
     }
@@ -1384,6 +1448,8 @@ function advanceMotionState(
     dirtyPlatesInSink: Number.isFinite(state.dirtyPlatesInSink)
       ? state.dirtyPlatesInSink
       : 0,
+    extinguisherAtStation:
+      state.extinguisherAtStation ?? true,
   };
   const normalizedAgents = state.agents.map((agent, index) => ({
     ...agent,
@@ -1397,6 +1463,7 @@ function advanceMotionState(
     cleanPlatesAtRack: worldState.cleanPlatesAtRack,
     grillFood: worldState.grillFood,
     dirtyPlatesInSink: worldState.dirtyPlatesInSink,
+    extinguisherAtStation: worldState.extinguisherAtStation,
     dirtyPlatesAtReturn: plateInventory,
   };
   const goals = normalizedAgents.map((agent, index) =>
@@ -1578,15 +1645,37 @@ function advanceMotionState(
       counterObjects[mutation.counterIndex] = mutation.to;
     }
   });
-  const cleanPlatesAtRack = Math.max(
-    0,
+  const cleanPlatesAtRack =
     worldState.cleanPlatesAtRack +
-      worldEffects.reduce(
-        (total, effect) =>
-          total + (effect.cleanPlateDelta ?? 0),
-        0,
-      ),
-  );
+    worldEffects.reduce(
+      (total, effect) =>
+        total + (effect.cleanPlateDelta ?? 0),
+      0,
+    );
+  if (
+    cleanPlatesAtRack < 0 ||
+    cleanPlatesAtRack > TOTAL_PHYSICAL_PLATES
+  ) {
+    throw new Error(
+      "Plate rack capacity violated: stack must stay between zero and four",
+    );
+  }
+  const extinguisherStationCount =
+    Number(worldState.extinguisherAtStation) +
+    worldEffects.reduce(
+      (total, effect) =>
+        total + (effect.extinguisherStationDelta ?? 0),
+      0,
+    );
+  if (
+    extinguisherStationCount < 0 ||
+    extinguisherStationCount > 1
+  ) {
+    throw new Error(
+      "Extinguisher station capacity violated: exactly one tool exists",
+    );
+  }
+  const extinguisherAtStation = extinguisherStationCount === 1;
   const grillAction = worldEffects.find((effect) => effect.grillAction)
     ?.grillAction;
   let grillFood = worldState.grillFood;
@@ -1707,6 +1796,7 @@ function advanceMotionState(
     firesStarted: (state.firesStarted ?? 0) + fireStartedDelta,
     firesExtinguished:
       (state.firesExtinguished ?? 0) + fireExtinguishedDelta,
+    extinguisherAtStation,
     grillFood,
     grillCookTicksRemaining,
     grillBurnTicksRemaining,
@@ -1720,6 +1810,9 @@ function advanceMotionState(
 
   if (countPhysicalPlates(nextState) !== TOTAL_PHYSICAL_PLATES) {
     throw new Error("Physical plate conservation invariant violated");
+  }
+  if (countPhysicalExtinguishers(nextState) !== 1) {
+    throw new Error("Physical extinguisher conservation invariant violated");
   }
 
   return nextState;
@@ -1772,6 +1865,8 @@ export default function Home() {
   )
     ? motionState.cleanPlatesAtRack
     : 4;
+  const extinguisherAtStation =
+    motionState.extinguisherAtStation ?? true;
   const physicalPlateCount =
     cleanPlatesAtRack +
     dirtyPlatesAtReturn +
@@ -1791,9 +1886,12 @@ export default function Home() {
         ),
       0,
     );
+  const physicalExtinguisherCount =
+    countPhysicalExtinguishers(motionState);
   const washedPlates = motionState.washedPlates ?? 0;
   const discardedItems = motionState.discardedItems ?? 0;
-  const washingAgent = motionState.agents[3];
+  const washingAgent =
+    motionState.agents[roleIndices(agentCount).dish];
   const washingActive =
     washingAgent.workKind === "washing" &&
     washingAgent.workTicksRemaining > 0;
@@ -2397,6 +2495,20 @@ export default function Home() {
             </div>
             <div className="setting-row">
               <span>
+                <i className="setting-icon">灭</i>
+                实体灭火器守恒
+              </span>
+              <strong>{physicalExtinguisherCount} / 1</strong>
+            </div>
+            <div className="setting-row">
+              <span>
+                <i className="setting-icon">≡</i>
+                净盘叠放
+              </span>
+              <strong>盘架 0–4 · 食品单格</strong>
+            </div>
+            <div className="setting-row">
+              <span>
                 <i className="setting-icon">⌁</i>
                 通信信道
               </span>
@@ -2485,6 +2597,11 @@ export default function Home() {
                       station.kind === "grill" && grillFailureActive
                         ? "grill-disabled"
                         : ""
+                    } ${
+                      station.kind === "extinguisher" &&
+                      !extinguisherAtStation
+                        ? "extinguisher-empty"
+                        : ""
                     }`}
                     key={`${station.kind}-${index}`}
                     data-obstacle={station.kind}
@@ -2493,12 +2610,23 @@ export default function Home() {
                         ? String(!grillFailureActive)
                         : undefined
                     }
+                    data-extinguisher-available={
+                      station.kind === "extinguisher"
+                        ? String(extinguisherAtStation)
+                        : undefined
+                    }
                     style={{
                       left: `${(station.x / map.cols) * 100}%`,
                       top: `${(station.y / map.rows) * 100}%`,
                       zIndex: 2 + station.y * 2,
                     }}
-                    title={meta.label}
+                    title={
+                      station.kind === "extinguisher"
+                        ? extinguisherAtStation
+                          ? "唯一灭火器 · 在位"
+                          : "唯一灭火器 · 已被主体取用"
+                        : meta.label
+                    }
                   >
                     <span className="station-front" aria-hidden="true" />
                     <span
@@ -2951,11 +3079,7 @@ export default function Home() {
             <button
               className={`fault-button ${grillFailureActive ? "active" : ""}`}
               onClick={injectFault}
-              disabled={
-                grillFailureActive ||
-                (motionState.agents[1]?.carrying !== null &&
-                  motionState.agents[1]?.carrying !== "extinguisher")
-              }
+              disabled={grillFailureActive}
             >
               <span aria-hidden="true">🔥</span>
               <div>

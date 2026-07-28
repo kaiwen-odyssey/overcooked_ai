@@ -62,8 +62,14 @@ while replacing the recipe state machine:
    queue;
 8. the separate dish-return hatch is the only station that releases returned
    dirty plates. Each returned plate must be carried to the sink and washed for the complete
-   configured duration before becoming a clean plate;
-9. fire recovery is an environment event and cannot be triggered by UI state.
+   configured duration before becoming a clean plate in the washing agent's
+   hand. Taking a clean plate decrements the visible rack stack; returning one
+   increments it. Up to all four clean plates may share the rack, while every
+   counter remains single-slot and food can never stack;
+9. exactly one physical extinguisher exists. Its station is empty while the
+   extinguisher is held or rests on a counter. Only an adjacent agent holding
+   that extinguisher can clear a burning grill with `PROCESS`; fire recovery
+   is an environment event and cannot be triggered by UI state.
 10. an adjacent interaction with the trash station may delete loose food or
    empty the food from a loaded plate; the physical plate remains in hand as
    a clean plate. Clean plates, dirty plates, and extinguishers cannot be

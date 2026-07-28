@@ -6,6 +6,7 @@ import numpy as np
 from burger_marl.actions import Action, Direction
 from burger_marl.mappo_env import (
     BurgerMAPPOEnv,
+    LOCAL_CHANNELS,
     MAX_AGENTS,
     NUM_GLOBAL_CHANNELS,
     NUM_LOCAL_CHANNELS,
@@ -176,6 +177,34 @@ class TestBurgerMAPPOContract(unittest.TestCase):
         )
         self.assertEqual(
             observation[TERRAIN_CHANNEL[SERVE], center + 1, center],
+            0.0,
+        )
+
+    def test_actor_observes_whether_unique_extinguisher_is_at_station(self):
+        env = BurgerMAPPOEnv(num_players=1)
+        available = env.state
+        available.players[0].position = (6, 1)
+        unavailable = copy.deepcopy(available)
+        unavailable.extinguisher_available = False
+
+        with_tool = env._local_observation(available, 0)
+        without_tool = env._local_observation(unavailable, 0)
+        center = env.observation_radius
+
+        self.assertEqual(
+            with_tool[
+                LOCAL_CHANNELS["extinguisher"],
+                center - 1,
+                center,
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            without_tool[
+                LOCAL_CHANNELS["extinguisher"],
+                center - 1,
+                center,
+            ],
             0.0,
         )
 

@@ -460,6 +460,8 @@ class BurgerMAPPOEnv:
             values[channels["stack_fill"]] = min(
                 1.0, state.clean_plates / state.total_plates
             )
+        elif terrain == EXTINGUISHER and state.extinguisher_available:
+            self._encode_item(values, "extinguisher", channels)
 
     @staticmethod
     def _encode_item(

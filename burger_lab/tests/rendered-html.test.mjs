@@ -49,6 +49,7 @@ globalThis.__simulation = {
   advanceMotionState,
   pointKey,
   countPhysicalPlates,
+  countPhysicalExtinguishers,
 };`;
   const javascript = ts.transpileModule(pageSource, {
     compilerOptions: {
@@ -112,6 +113,9 @@ test("server-renders the NEXUS simulator shell", async () => {
   assert.match(html, /每步校验 \+ 摘要/);
   assert.match(html, /实体盘子守恒/);
   assert.match(html, /4<!-- --> \/ <!-- -->4/);
+  assert.match(html, /实体灭火器守恒/);
+  assert.match(html, /1<!-- --> \/ 1/);
+  assert.match(html, /盘架 0–4 · 食品单格/);
   assert.match(html, /网页不能修改状态或分数/);
   assert.match(html, /累计事件奖励/);
   assert.match(html, /出餐 <!-- -->0<!-- --> · 起火 <!-- -->0/);
@@ -248,6 +252,9 @@ test("keeps grill timing, lockout, and fire penalty explicit", async () => {
   assert.match(pageSource, /fireStartedDelta = 1/);
   assert.match(pageSource, /fireExtinguishedDelta = 1/);
   assert.match(pageSource, /data-grill-usable=/);
+  assert.match(pageSource, /extinguisherAtStation: true/);
+  assert.match(pageSource, /countPhysicalExtinguishers\(nextState\) !== 1/);
+  assert.match(pageSource, /PICK\/DROP · 应急放回净盘/);
   assert.match(pageSource, /灶台锁定 · 等待灭火器/);
 });
 
@@ -339,6 +346,7 @@ test("one to four scripted agents complete legal lockstep episodes", async () =>
     advanceMotionState,
     pointKey,
     countPhysicalPlates,
+    countPhysicalExtinguishers,
   } = await loadPureSimulation();
   const map = maps[0];
   const paths = map.paths.map(orthogonalizePath);
@@ -371,11 +379,90 @@ test("one to four scripted agents complete legal lockstep episodes", async () =>
         assert.notEqual(agent.carrying, "cooked-beef");
       });
       assert.equal(countPhysicalPlates(state), 4);
+      assert.equal(countPhysicalExtinguishers(state), 1);
     }
     deliveries.push(state.servedOrders);
   }
 
-  assert.deepEqual(deliveries, [1, 6, 12, 10]);
+  assert.deepEqual(deliveries, [4, 6, 12, 10]);
+});
+
+test("recovers a natural single-agent fire with one physical extinguisher", async () => {
+  const {
+    maps,
+    orthogonalizePath,
+    createMotionState,
+    advanceMotionState,
+    pointKey,
+    countPhysicalPlates,
+    countPhysicalExtinguishers,
+  } = await loadPureSimulation();
+  const map = maps[0];
+  const paths = map.paths.map(orthogonalizePath);
+  const blockedCells = new Set([
+    ...map.counters.map(pointKey),
+    ...map.stations.map((station) => pointKey([station.x, station.y])),
+  ]);
+  let state = createMotionState(paths);
+
+  for (let step = 0; step < 429; step += 1) {
+    state = advanceMotionState(
+      state,
+      paths,
+      1,
+      blockedCells,
+      map,
+    );
+    assert.equal(countPhysicalPlates(state), 4);
+    assert.equal(countPhysicalExtinguishers(state), 1);
+  }
+
+  assert.ok(state.firesStarted >= 1);
+  assert.equal(state.firesExtinguished, state.firesStarted);
+  assert.notEqual(state.grillFood, "burnt-beef");
+});
+
+test("washing returns one clean plate to hand before rack stacking", async () => {
+  const {
+    maps,
+    orthogonalizePath,
+    createMotionState,
+    advanceMotionState,
+    pointKey,
+  } = await loadPureSimulation();
+  const map = maps[0];
+  const paths = map.paths.map(orthogonalizePath);
+  const blockedCells = new Set([
+    ...map.counters.map(pointKey),
+    ...map.stations.map((station) => pointKey([station.x, station.y])),
+  ]);
+  let state = createMotionState(paths);
+  let sawWashedPlateInHand = false;
+  let sawRackReturn = false;
+
+  for (let step = 0; step < 429; step += 1) {
+    const previous = state;
+    state = advanceMotionState(
+      state,
+      paths,
+      3,
+      blockedCells,
+      map,
+    );
+    assert.ok(state.cleanPlatesAtRack >= 0);
+    assert.ok(state.cleanPlatesAtRack <= 4);
+    if (state.washedPlates > previous.washedPlates) {
+      sawWashedPlateInHand = state.agents
+        .slice(0, 3)
+        .some((agent) => agent.carrying === "clean-plate");
+    }
+    if (state.cleanPlatesAtRack > previous.cleanPlatesAtRack) {
+      sawRackReturn = true;
+    }
+  }
+
+  assert.ok(sawWashedPlateInHand);
+  assert.ok(sawRackReturn);
 });
 
 test("keeps unrelated agents moving while a teammate interacts", async () => {

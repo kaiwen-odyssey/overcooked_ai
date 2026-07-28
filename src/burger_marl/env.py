@@ -199,6 +199,7 @@ class BurgerState:
     grill: GrillState = field(default_factory=GrillState)
     sink: SinkState = field(default_factory=SinkState)
     delivered_orders: int = 0
+    extinguisher_available: bool = True
 
 
 @dataclass(frozen=True)
@@ -365,7 +366,7 @@ class BurgerGridworld:
                 )
             elif terrain == EXTINGUISHER:
                 self._interact_extinguisher_station(
-                    player, player_idx, events
+                    state, player_idx, events
                 )
             elif terrain == PLATE_RACK:
                 self._interact_plate_rack(state, player_idx, events)
@@ -499,19 +500,25 @@ class BurgerGridworld:
             state.clean_plates += 1
             events.append({"type": "clean_plate_return", "agent": player_idx})
 
-    @staticmethod
     def _interact_extinguisher_station(
-        player: BurgerPlayerState,
+        self,
+        state: BurgerState,
         player_idx: int,
         events: List[Dict[str, object]],
     ) -> None:
-        if player.held_object is None:
+        player = state.players[player_idx]
+        if player.held_object is None and state.extinguisher_available:
             player.held_object = "extinguisher"
+            state.extinguisher_available = False
             events.append(
                 {"type": "extinguisher_pickup", "agent": player_idx}
             )
-        elif player.held_object == "extinguisher":
+        elif (
+            player.held_object == "extinguisher"
+            and not state.extinguisher_available
+        ):
             player.held_object = None
+            state.extinguisher_available = True
             events.append(
                 {"type": "extinguisher_return", "agent": player_idx}
             )
@@ -574,6 +581,7 @@ class BurgerGridworld:
                 return (
                     state.sink.has_dirty_plate
                     and state.sink.washing_player == player_idx
+                    and player.held_object is None
                 )
             if terrain == GRILL:
                 return (
@@ -615,7 +623,12 @@ class BurgerGridworld:
                 is not None
             )
         if terrain == EXTINGUISHER:
-            return held in {None, "extinguisher"}
+            return (
+                held is None and state.extinguisher_available
+            ) or (
+                held == "extinguisher"
+                and not state.extinguisher_available
+            )
         if terrain == PLATE_RACK:
             return (
                 (held is None and state.clean_plates > 0)
@@ -789,10 +802,15 @@ class BurgerGridworld:
             }
         )
         if sink.wash_progress == self.config.wash_steps:
+            player = state.players[player_idx]
+            if player.held_object is not None:
+                raise ValueError(
+                    "Washing player must have an empty hand at completion"
+                )
             sink.has_dirty_plate = False
             sink.wash_progress = 0
             sink.washing_player = None
-            state.clean_plates += 1
+            player.held_object = "clean_plate"
             events.append({"type": "plate_washed", "agent": player_idx})
 
     def _resolve_movement(
@@ -1046,6 +1064,8 @@ class BurgerGridworld:
             for value in integer_counts.values()
         ):
             raise ValueError("State counters must be non-negative integers")
+        if not isinstance(state.extinguisher_available, bool):
+            raise ValueError("Extinguisher availability must be boolean")
         if any(
             not isinstance(due, int) or due < state.timestep
             for due in state.pending_plate_returns
@@ -1076,6 +1096,11 @@ class BurgerGridworld:
         if state.sink.has_dirty_plate:
             if state.sink.washing_player not in range(len(state.players)):
                 raise ValueError("Sink has no valid washing player")
+            if (
+                state.players[state.sink.washing_player].held_object
+                is not None
+            ):
+                raise ValueError("Washing player must have an empty hand")
             if state.sink.wash_progress >= self.config.wash_steps:
                 raise ValueError("Completed wash must immediately return a clean plate")
 
@@ -1093,6 +1118,24 @@ class BurgerGridworld:
             raise ValueError(
                 "Plate conservation violated: observed {}, expected {}".format(
                     observed_plates, state.total_plates
+                )
+            )
+
+        observed_extinguishers = (
+            int(state.extinguisher_available)
+            + sum(
+                player.held_object == "extinguisher"
+                for player in state.players
+            )
+            + sum(
+                item == "extinguisher"
+                for item in state.counter_objects.values()
+            )
+        )
+        if observed_extinguishers != 1:
+            raise ValueError(
+                "Extinguisher conservation violated: observed {}, expected 1".format(
+                    observed_extinguishers
                 )
             )
 
@@ -1137,6 +1180,7 @@ class BurgerGridworld:
             "grill": vars(state.grill),
             "sink": vars(state.sink),
             "delivered_orders": state.delivered_orders,
+            "extinguisher_available": state.extinguisher_available,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

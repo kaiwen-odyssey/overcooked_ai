@@ -1,3 +1,4 @@
+import copy
 import random
 import unittest
 from collections import deque
@@ -121,6 +122,7 @@ class TestBurgerGridworldContract(unittest.TestCase):
         self.assertEqual(
             holding.players[0].held_object, "extinguisher"
         )
+        self.assertFalse(holding.extinguisher_available)
         self.assertTrue(
             mdp.context_action_available(
                 holding, 0, Action.PICK_DROP
@@ -130,10 +132,90 @@ class TestBurgerGridworldContract(unittest.TestCase):
             holding, [Action.PICK_DROP]
         )
         self.assertIsNone(returned.state.players[0].held_object)
+        self.assertTrue(returned.state.extinguisher_available)
         self.assertIn(
             "extinguisher_return",
             {event["type"] for event in returned.info["events"]},
         )
+
+    def test_extinguisher_is_one_conserved_physical_object(self):
+        mdp = BurgerGridworld(
+            layout(("   ", " E ", "   "), ((0, 1), (2, 1)))
+        )
+        state = mdp.get_standard_start_state(2)
+
+        picked = mdp.get_state_transition(
+            state, [Action.PICK_DROP, Action.PICK_DROP]
+        )
+
+        self.assertEqual(
+            [
+                player.held_object
+                for player in picked.state.players
+            ].count("extinguisher"),
+            1,
+        )
+        self.assertFalse(picked.state.extinguisher_available)
+        self.assertEqual(
+            [
+                event["type"]
+                for event in picked.info["events"]
+            ].count("extinguisher_pickup"),
+            1,
+        )
+        mdp.validate_state(picked.state)
+
+        forged = copy.deepcopy(picked.state)
+        second_player = next(
+            player
+            for player in forged.players
+            if player.held_object != "extinguisher"
+        )
+        second_player.held_object = "extinguisher"
+        with self.assertRaisesRegex(
+            ValueError, "Extinguisher conservation"
+        ):
+            mdp.validate_state(forged)
+
+    def test_clean_plates_stack_only_at_plate_rack(self):
+        mdp = BurgerGridworld(
+            layout(("   ", " D ", "   "), ((0, 1), (2, 1)))
+        )
+        state = BurgerState(
+            players=[
+                BurgerPlayerState(
+                    (0, 1), Direction.NORTH, "clean_plate"
+                ),
+                BurgerPlayerState(
+                    (2, 1), Direction.NORTH, "clean_plate"
+                ),
+            ],
+            clean_plates=2,
+            total_plates=4,
+        )
+
+        stacked = mdp.get_state_transition(
+            state, [Action.PICK_DROP, Action.PICK_DROP]
+        ).state
+        self.assertEqual(stacked.clean_plates, 4)
+        self.assertTrue(
+            all(
+                player.held_object is None
+                for player in stacked.players
+            )
+        )
+
+        taken = mdp.get_state_transition(
+            stacked, [Action.PICK_DROP, Action.PICK_DROP]
+        ).state
+        self.assertEqual(taken.clean_plates, 2)
+        self.assertTrue(
+            all(
+                player.held_object == "clean_plate"
+                for player in taken.players
+            )
+        )
+        mdp.validate_state(taken)
 
     def test_objects_cannot_be_dropped_on_floor_or_disappear(self):
         mdp = BurgerGridworld(
@@ -243,6 +325,8 @@ class TestBurgerGridworldContract(unittest.TestCase):
                 state.players[0].held_object = item
                 if item in {"clean_plate", "dirty_plate"}:
                     state.clean_plates = 3
+                if item == "extinguisher":
+                    state.extinguisher_available = False
                 transition = mdp.get_state_transition(
                     state, [Action.PICK_DROP]
                 )
@@ -492,6 +576,34 @@ class TestBurgerGridworldContract(unittest.TestCase):
         )
         mdp.validate_state(result.state)
 
+    def test_food_cannot_assemble_without_a_physical_plate(self):
+        mdp = BurgerGridworld(
+            layout((" L ", "   "), ((1, 1),)),
+            BurgerConfig(total_plates=1),
+        )
+        state = BurgerState(
+            players=[
+                BurgerPlayerState(
+                    (1, 1), Direction.NORTH, "bun"
+                )
+            ],
+            clean_plates=0,
+            dirty_plates_at_return=1,
+            total_plates=1,
+        )
+
+        unchanged = mdp.get_state_transition(
+            state, [Action.PICK_DROP]
+        ).state
+
+        self.assertEqual(unchanged.players[0].held_object, "bun")
+        self.assertFalse(
+            mdp.context_action_available(
+                state, 0, Action.PICK_DROP
+            )
+        )
+        mdp.validate_state(unchanged)
+
     def test_partial_burger_is_assembled_on_one_visible_counter(self):
         mdp = BurgerGridworld(
             layout(
@@ -738,7 +850,10 @@ class TestBurgerGridworldContract(unittest.TestCase):
             self.assertEqual(state.clean_plates, 0)
         completed = mdp.get_state_transition(state, [Action.PROCESS]).state
         self.assertFalse(completed.sink.has_dirty_plate)
-        self.assertEqual(completed.clean_plates, 1)
+        self.assertEqual(completed.clean_plates, 0)
+        self.assertEqual(
+            completed.players[0].held_object, "clean_plate"
+        )
         self.assertEqual(completed.dirty_plates_at_return, 1)
 
     def test_pick_drop_and_process_are_distinct_context_actions(self):
@@ -854,10 +969,15 @@ class TestBurgerGridworldContract(unittest.TestCase):
         self.assertEqual(blocked.players[0].held_object, "raw_beef")
 
         blocked.players[0].held_object = "extinguisher"
+        blocked.extinguisher_available = False
         recovered = mdp.get_state_transition(
             blocked, [Action.PROCESS]
         )
         self.assertIsNone(recovered.state.grill.food)
+        self.assertEqual(
+            recovered.state.players[0].held_object,
+            "extinguisher",
+        )
         self.assertIn(
             "fire_extinguished",
             {event["type"] for event in recovered.info["events"]},
