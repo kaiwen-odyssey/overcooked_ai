@@ -17,19 +17,41 @@ environment:
   ready_pickup_window_steps: 16
   wash_steps: 10
   plate_return_steps: 12
-  actor_observation: local_world_aligned_26x9x9
+  actor_observation: local_world_aligned_29x9x9_with_self_pose
   critic_observation: authoritative_global_state
 
 training:
   algorithm: PPO
+  initialization: random
+  behavior_cloning_steps: 0
+  reverse_curriculum:
+    - serve_ready
+    - grill_ready
+    - cook_ready
+    - plate_ready
+    - plate_pick_ready
+    - rack_ready
+    - raw_ready
+    - grill_approach_ready
+    - beef_carry_ready
+    - beef_pick_ready
+    - wash_ready
+    - wash_required_ready
+    - sink_drop_ready
+    - dirty_plate_carry_ready
+    - dirty_return_ready
+    - second_dish_ready
+    - plate_exhausted_ready
+    - standard
+  adjacent_stage_reset_mix: 0.5
   total_env_steps: 3000000
   parallel_environments: 64
   rollout_length: 256
   update_epochs: 4
   mini_batches: 8
   learning_rate: 3.0e-4
-  gamma: 0.99
-  gae_lambda: 0.95
+  gamma: 0.999
+  gae_lambda: 0.98
   ppo_clip: 0.20
   entropy_coefficient: 0.01
   max_grad_norm: 10.0
@@ -39,19 +61,28 @@ training:
   action_freeze_patience_updates: 3
 
 reward:
-  source: validated_environment_events_only
+  source: sparse_delivery_plus_policy_invariant_potential
   correct_delivery: 20.0
+  raw_beef_placed: 0.0
+  dirty_plate_pickup: 0.0
+  wash_started: 0.0
+  wash_progress: 0.0
+  plate_washed: 0.0
   fire_started: -5.0
   blocked_or_collision: -0.05
-  time_step: -0.01
+  time_step: 0.0
   potential_scale: 1.0
+  navigation_potential_scale: 1.0
+  navigation_shaping: gamma_phi_next_minus_phi_current
   potential_gamma_must_equal_training_gamma: true
   invalid_or_repeated_interaction: 0.0
 
 acceptance_gate:
   preflight_status: passed
   deterministic_fixed_start_episodes: 20
-  minimum_mean_deliveries_per_180s: 1.0
+  randomized_legal_start_positions: true
+  minimum_mean_deliveries_per_180s: 2.0
+  minimum_dirty_plates_washed_in_plate_exhausted_stage: 1
   max_eval_all_agents_stay_ratio: 0.95
   max_eval_all_agents_noop_ratio: 0.98
   compare_against: random_policy

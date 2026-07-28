@@ -70,6 +70,18 @@ LOCAL_CHANNELS = {
     "station_progress": _LOCAL_SEMANTIC_OFFSET + 10,
     "stack_fill": _LOCAL_SEMANTIC_OFFSET + 11,
     "time_remaining": _LOCAL_SEMANTIC_OFFSET + 12,
+    "dirty_plate": _LOCAL_SEMANTIC_OFFSET + 13,
+    "self_x": _LOCAL_SEMANTIC_OFFSET + 14,
+    "self_y": _LOCAL_SEMANTIC_OFFSET + 15,
+    # A kitchen fire is a persistent audiovisual alarm, not a hidden
+    # line-of-sight-only object. Broadcasting this one-bit signal keeps the
+    # decentralized actor Markov while it routes around occluding counters.
+    "fire_alarm": _LOCAL_SEMANTIC_OFFSET + 16,
+    # The plate-rack count is shown on the kitchen HUD and is an operational
+    # alert, not privileged critic state. Broadcast the empty-rack bit so a
+    # decentralized actor can finish a dish cycle after leaving the sink or
+    # return hatch.
+    "plate_shortage": _LOCAL_SEMANTIC_OFFSET + 17,
 }
 NUM_LOCAL_CHANNELS = max(LOCAL_CHANNELS.values()) + 1
 MAX_AGENTS = 4
@@ -88,8 +100,9 @@ GLOBAL_CHANNELS = {
     "station_progress": GLOBAL_ITEM_OFFSET + 8,
     "stack_fill": GLOBAL_ITEM_OFFSET + 9,
     "time_remaining": GLOBAL_ITEM_OFFSET + 10,
+    "dirty_plate": GLOBAL_ITEM_OFFSET + 11,
 }
-NUM_GLOBAL_CHANNELS = GLOBAL_ITEM_OFFSET + 11
+NUM_GLOBAL_CHANNELS = GLOBAL_ITEM_OFFSET + 12
 NUM_GLOBAL_SCALARS = MAX_AGENTS * 2
 ORIENTATION_TO_INDEX = {
     (0, -1): 0,
@@ -108,6 +121,10 @@ class BurgerMAPPOEnv:
         num_players: int = 4,
         observation_radius: int = 4,
         occlusion: bool = True,
+        start_stage: str = "standard",
+        randomize_player_positions: bool = False,
+        random_start_max_objective_distance: Optional[int] = None,
+        random_start_candidate_positions: Sequence[Point] = (),
     ) -> None:
         if not 1 <= num_players <= MAX_AGENTS:
             raise ValueError("num_players must be between one and four")
@@ -119,7 +136,18 @@ class BurgerMAPPOEnv:
         self.observation_radius = observation_radius
         self.occlusion = occlusion
         self._side = observation_radius * 2 + 1
-        self._env = BurgerEnv(self.mdp, num_players)
+        self._env = BurgerEnv(
+            self.mdp,
+            num_players,
+            start_stage=start_stage,
+            randomize_player_positions=randomize_player_positions,
+            random_start_max_objective_distance=(
+                random_start_max_objective_distance
+            ),
+            random_start_candidate_positions=(
+                random_start_candidate_positions
+            ),
+        )
 
         local_space = gymnasium.spaces.Box(
             low=0.0,
@@ -154,14 +182,20 @@ class BurgerMAPPOEnv:
     def state(self) -> BurgerState:
         return self._env.state
 
+    @property
+    def _state_view(self) -> BurgerState:
+        """Internal read-only state view used by the vectorized trainer."""
+
+        return self._env._state_view
+
     def reset(
         self, seed: Optional[int] = None
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        # Dynamics are deterministic. Accepting a seed keeps vectorized trainer
-        # interfaces stable without introducing hidden RNG state.
         if seed is not None and not isinstance(seed, (int, np.integer)):
             raise ValueError("seed must be an integer")
-        self._env.reset()
+        self._env.reset(
+            seed=None if seed is None else int(seed)
+        )
         return (
             self.local_observations(),
             self.shared_observations(),
@@ -200,7 +234,7 @@ class BurgerMAPPOEnv:
             Action.INDEX_TO_ACTION[index]
             for index in action_indices[: self.num_players]
         ]
-        transition = self._env.step(joint_action)
+        transition = self._env._step_internal(joint_action)
         observations = self.local_observations()
         shared_observations = self.shared_observations()
         rewards = np.zeros((MAX_AGENTS, 1), dtype=np.float32)
@@ -244,8 +278,9 @@ class BurgerMAPPOEnv:
         available = np.zeros(
             (MAX_AGENTS, Action.NUM_ACTIONS), dtype=np.float32
         )
+        state = self._env._state_view
         for player_idx in range(self.num_players):
-            player = self._env.state.players[player_idx]
+            player = state.players[player_idx]
             available[
                 player_idx,
                 Action.ACTION_TO_INDEX[Action.STAY],
@@ -261,7 +296,7 @@ class BurgerMAPPOEnv:
                     ] = 1.0
             for context_action in (Action.PICK_DROP, Action.PROCESS):
                 if self.mdp.context_action_available(
-                    self._env.state,
+                    state,
                     player_idx,
                     context_action,
                 ):
@@ -293,7 +328,7 @@ class BurgerMAPPOEnv:
             ),
             dtype=np.float32,
         )
-        state = self._env.state
+        state = self._env._state_view
         for agent_index in range(self.num_players):
             observations[agent_index] = self._local_observation(
                 state, agent_index
@@ -308,7 +343,7 @@ class BurgerMAPPOEnv:
             ),
             dtype=np.float32,
         )
-        encoded = self._global_state(self._env.state)
+        encoded = self._global_state(self._env._state_view)
         shared[: self.num_players] = encoded
         return shared
 
@@ -369,6 +404,16 @@ class BurgerMAPPOEnv:
             0.0,
             1.0 - state.timestep / self.mdp.config.horizon,
         )
+        observation[LOCAL_CHANNELS["self_x"]] = (
+            player.position[0] / max(self.mdp.layout.width - 1, 1)
+        )
+        observation[LOCAL_CHANNELS["self_y"]] = (
+            player.position[1] / max(self.mdp.layout.height - 1, 1)
+        )
+        if state.grill.food == "burnt_beef":
+            observation[LOCAL_CHANNELS["fire_alarm"]] = 1.0
+        if state.clean_plates == 0:
+            observation[LOCAL_CHANNELS["plate_shortage"]] = 1.0
         return observation
 
     def _global_state(self, state: BurgerState) -> np.ndarray:
@@ -486,6 +531,8 @@ class BurgerMAPPOEnv:
             return
         if item == "dirty_plate":
             values[channels["plate"]] = 1.0
+            if "dirty_plate" in channels:
+                values[channels["dirty_plate"]] = 1.0
         elif item in channels:
             values[channels[item]] = 1.0
 

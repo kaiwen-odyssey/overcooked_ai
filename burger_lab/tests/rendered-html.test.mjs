@@ -88,15 +88,27 @@ test("server-renders the NEXUS simulator shell", async () => {
   assert.match(html, /<title>NEXUS · 多主体汉堡协作训练平台<\/title>/i);
   assert.match(html, /NEXUS/);
   assert.match(html, /汉堡协作厨房/);
-  assert.match(html, /DETERMINISTIC SCRIPT · NO PPO\/MAPPO/);
+  assert.match(html, /PPO 策略回放|确定性演示回放/);
   assert.match(html, /STANDALONE BURGER CORE · 7-ACTION PPO\/MAPPO INTERFACE/);
   assert.match(html, /Cramped Galley/);
   assert.match(html, /协作规模与边际效应/);
+  assert.match(html, /训练步数与每局平均送餐数/);
+  assert.match(html, /5\.21(?:<!-- -->)? 份\/局/);
+  assert.match(html, /标准 5\.675 · 脏盘 5\.225 · 缺盘 4\.700 · 过火 5\.250/);
+  assert.match(html, /累计采样环境步数/);
+  assert.match(html, /切换为随机位置评估/);
   assert.match(html, /单位时间送餐/);
   assert.match(html, /团队总奖励/);
   assert.match(html, /协同增益/);
   assert.match(html, /边际吞吐/);
   assert.match(html, /外围连续工作台包围中央实体岛台/);
+  assert.match(html, /PPO 开局场景/);
+  assert.match(html, /标准生产/);
+  assert.match(html, /灭火恢复/);
+  assert.match(html, /灶台起火 · 扑灭后恢复出餐/);
+  assert.match(html, /脏盘回收/);
+  assert.match(html, /手持脏盘 · 洗净后恢复生产/);
+  assert.match(html, /POLICY ONLY/);
   assert.match(html, /桌台 \/ 灶台碰撞/);
   assert.match(html, /硬约束/);
   assert.match(html, /同格终点 \/ 迎面换位/);
@@ -118,7 +130,7 @@ test("server-renders the NEXUS simulator shell", async () => {
   assert.match(html, /盘架 0–4 · 食品单格/);
   assert.match(html, /网页不能修改状态或分数/);
   assert.match(html, /累计事件奖励/);
-  assert.match(html, /出餐 <!-- -->0<!-- --> · 起火 <!-- -->0/);
+  assert.match(html, /出餐 <!-- -->0\.0<!-- --> · 起火 <!-- -->0/);
   assert.doesNotMatch(html, /交接 \+1\.5/);
   assert.match(
     html,
@@ -141,6 +153,78 @@ test("server-renders the NEXUS simulator shell", async () => {
   assert.match(html, /SIM-TO-REAL-TO-SIM/);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Your site is taking shape/);
+});
+
+test("publishes a full 180-second standard PPO episode", async () => {
+  const replay = JSON.parse(
+    await readFile(
+      new URL("../public/ppo-policy-replay.json", import.meta.url),
+      "utf8",
+    ),
+  );
+
+  assert.equal(replay.schema, "nexus.burger.ppo-policy-replay.v1");
+  assert.equal(replay.algorithm, "PPO");
+  assert.equal(replay.scenarioId, "standard");
+  assert.equal(replay.curriculumStage, "random_standard_180s");
+  assert.equal(replay.frames.at(-1).state.step, 429);
+  assert.equal(replay.frames.length, 430);
+  assert.ok(replay.deliveries >= 1);
+  assert.ok(replay.washedPlates >= 1);
+  assert.equal(replay.fires, 0);
+  assert.ok(replay.maxStagnationSteps <= 60);
+  assert.ok(
+    replay.frames.some((frame) => frame.events.includes("plate_washed")),
+  );
+});
+
+test("publishes successful fire and dirty-plate PPO scenarios", async () => {
+  const [fire, dirty] = await Promise.all(
+    ["fire", "dirty"].map(async (scenario) =>
+      JSON.parse(
+        await readFile(
+          new URL(
+            `../public/ppo-policy-replay-${scenario}.json`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ),
+    ),
+  );
+
+  assert.equal(fire.scenarioId, "fire");
+  assert.equal(fire.startStage, "fire_recovery_ready");
+  assert.equal(fire.frames[0].state.grillFood, "burnt-beef");
+  assert.equal(fire.frames[0].state.servedOrders, 0);
+  assert.ok(fire.deliveries >= 1);
+  assert.ok(fire.firesExtinguished >= 1);
+  assert.ok(
+    fire.frames.some((frame) =>
+      frame.events.includes("fire_extinguished"),
+    ),
+  );
+  assert.ok(
+    fire.frames.some((frame) =>
+      frame.events.includes("extinguisher_return"),
+    ),
+  );
+
+  assert.equal(dirty.scenarioId, "dirty");
+  assert.equal(dirty.startStage, "dirty_plate_carry_ready");
+  assert.equal(dirty.frames[0].state.agents[0].carrying, "dirty-plate");
+  assert.equal(dirty.frames[0].state.servedOrders, 0);
+  assert.ok(dirty.deliveries >= 1);
+  assert.ok(dirty.washedPlates >= 1);
+  assert.ok(
+    dirty.frames.some((frame) => frame.events.includes("plate_washed")),
+  );
+
+  for (const replay of [fire, dirty]) {
+    assert.equal(replay.frames.at(-1).state.step, 429);
+    assert.equal(replay.frames.length, 430);
+    assert.ok(replay.maxStagnationSteps <= 60);
+  }
 });
 
 test("publishes site-specific metadata", async () => {

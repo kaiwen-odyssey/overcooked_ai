@@ -177,10 +177,20 @@ is written to `preflight.json` beside the checkpoints.
 
 The first controlled experiment intentionally uses only **Cramped Galley**:
 
-1. Train one-agent PPO for 3 million environment transitions from random
-   initialization. If exploration is insufficient, behavior-cloning
-   pretraining may be enabled explicitly from the legal scripted trajectory;
-   it is never applied silently.
+1. Train one-agent PPO for up to 3 million environment transitions from random
+   initialization with no behavior-cloning data. Use the legal reverse
+   curriculum `serve_ready` → `grill_ready` → `cook_ready` → `plate_ready` →
+   `plate_pick_ready` → `rack_ready` → `raw_ready` →
+   `grill_approach_ready` → `beef_carry_ready` → `beef_pick_ready` →
+   `standard`. `grill_approach_ready` moves the held raw beef one floor cell
+   away from the grill before `beef_carry_ready` extends that path back to the
+   dispenser. The following `beef_pick_ready` bridge starts empty-handed
+   beside that dispenser, adding only the missing physical pickup before
+   exposure to the full spawn. Every start state is validated by the same
+   gameplay state machine; only the reset distribution changes. When a harder
+   stage is introduced, half of the parallel environments retain the
+   immediately preceding stage so PPO preserves the already learned skill
+   without behavior-cloning data.
 2. Accept stage one only if deterministic fixed-start evaluation averages at
    least one valid delivery per 180-second episode and exceeds a random policy.
 3. Warm-start the shared two-agent actor from the accepted one-agent actor.
@@ -193,7 +203,10 @@ The first controlled experiment intentionally uses only **Cramped Galley**:
 The 3M + 9M split preserves the proposed 12-million-step budget while making
 the causal question explicit: first learn the recipe, then learn cooperation.
 If the stage-one gate fails, do not start the expensive MAPPO run; diagnose
-exploration, potential shaping, and task observability first.
+exploration, potential shaping, and task observability first. A curriculum
+stage advances only after fixed-seed deterministic evaluation completes its
+subtask with no fire; the final acceptance gate always uses the untouched
+`standard` reset.
 
 Reference commands:
 
@@ -202,14 +215,8 @@ Reference commands:
 
 .venv/bin/python -m burger_marl.training \
   --algorithm ppo --num-agents 1 --total-env-steps 3000000 \
-  --num-envs 64 --rollout-length 256 --output-dir runs/burger
-
-# Optional one-agent warm start. The trainer records pretraining.json and
-# pretrained.pt before PPO begins.
-.venv/bin/python -m burger_marl.training \
-  --algorithm ppo --num-agents 1 --total-env-steps 3000000 \
-  --num-envs 64 --rollout-length 256 --bc-pretrain-steps 2000 \
-  --output-dir runs/burger_bc
+  --num-envs 64 --rollout-length 256 --bc-pretrain-steps 0 \
+  --training-start-stage standard --output-dir runs/burger
 
 .venv/bin/python -m burger_marl.training \
   --algorithm mappo --num-agents 2 --total-env-steps 9000000 \
@@ -240,7 +247,8 @@ and all-no-op `< 0.98`.
 - Shared two-layer CNN + 256-unit MLP actor with agent-ID embedding.
 - Separate centralized 256-unit MLP critic.
 - Adam learning rate `3e-4`.
-- `gamma=0.99`, `gae_lambda=0.95`, PPO clip `0.20`.
+- `gamma=0.999`, `gae_lambda=0.98`, PPO clip `0.20`. The long discount
+  horizon keeps late deliveries material in the 429-step throughput episode.
 - Value clip `0.20`, entropy coefficient `0.01`.
 - Rollout length 256, 64 parallel environments, 4 PPO epochs, 8 mini-batches.
 - Gradient norm clipping at 10.
@@ -275,6 +283,11 @@ cannot farm intermediate steps.
 Invalid or repeated interactions receive zero event reward. Do not add a
 handoff bonus to the final training objective: the policy must value handoffs
 only through their effect on valid recipe progress and delivery throughput.
+Likewise, raw-beef placement, dirty-plate pickup, wash start/progress, and
+plate-washed events are logged as diagnostics but receive zero standalone
+reward in final-objective training. A `plate_exhausted_ready` evaluation state
+with all four plates dirty verifies that washing is learned as a necessary
+means to the next delivery rather than as a reward-farming side task.
 The shaping `gamma` is materialized from the same `TrainConfig.gamma` used by
 PPO, and the terminal potential is forced to zero. This preserves
 potential-based policy invariance: pickup/drop cycles telescope instead of

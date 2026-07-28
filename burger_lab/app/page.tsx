@@ -405,10 +405,112 @@ const rewardRows = [
   ["势函数差分", "γΦ(s′) − Φ(s)", "共享"],
   ["首次烧糊 / 起火", "−5.0", "团队"],
   ["碰撞 / 阻塞", "−0.05", "团队"],
-  ["每步时间成本", "−0.01", "团队"],
+  ["每步时间成本", "0.0", "固定时长内由吞吐目标隐式约束"],
   ["丢弃食材 / 倒空盘", "0.0", "无事件奖励"],
   ["非法 / 重复交互", "0.0", "无事件"],
 ];
+
+const ppoTrainingProgress = [
+  {
+    steps: 8_192,
+    deliveriesPerEpisode: 1.0,
+    dpm: 0.333,
+    phase: "固定开局巩固",
+    protocol: "固定位置",
+  },
+  {
+    steps: 131_072,
+    deliveriesPerEpisode: 1.0,
+    dpm: 0.333,
+    phase: "固定开局巩固",
+    protocol: "固定位置",
+  },
+  {
+    steps: 262_144,
+    deliveriesPerEpisode: 3.0,
+    dpm: 0.999,
+    phase: "固定开局巩固",
+    protocol: "固定位置",
+  },
+  {
+    steps: 270_336,
+    deliveriesPerEpisode: 2.7,
+    dpm: 0.899,
+    phase: "任意位置泛化",
+    protocol: "随机位置",
+  },
+  {
+    steps: 393_216,
+    deliveriesPerEpisode: 3.6,
+    dpm: 1.199,
+    phase: "任意位置泛化",
+    protocol: "随机位置",
+  },
+  {
+    steps: 524_288,
+    deliveriesPerEpisode: 3.6,
+    dpm: 1.199,
+    phase: "任意位置泛化",
+    protocol: "随机位置",
+  },
+  {
+    steps: 532_480,
+    deliveriesPerEpisode: 3.8,
+    dpm: 1.265,
+    phase: "脏盘可观测",
+    protocol: "随机位置",
+  },
+  {
+    steps: 655_360,
+    deliveriesPerEpisode: 3.8,
+    dpm: 1.265,
+    phase: "脏盘可观测",
+    protocol: "随机位置",
+  },
+  {
+    steps: 786_432,
+    deliveriesPerEpisode: 2.45,
+    dpm: 0.816,
+    phase: "脏盘可观测",
+    protocol: "随机位置",
+  },
+  {
+    steps: 794_624,
+    deliveriesPerEpisode: 3.8,
+    dpm: 1.265,
+    phase: "困难开局强化",
+    protocol: "回滚最佳点 · 随机位置",
+  },
+  {
+    steps: 917_504,
+    deliveriesPerEpisode: 3.8,
+    dpm: 1.265,
+    phase: "困难开局强化",
+    protocol: "随机位置",
+  },
+  {
+    steps: 1_048_576,
+    deliveriesPerEpisode: 3.8,
+    dpm: 1.265,
+    phase: "困难开局强化",
+    protocol: "随机位置",
+  },
+  {
+    steps: 1_179_648,
+    deliveriesPerEpisode: 5.2125,
+    dpm: 1.7358,
+    phase: "联合困难验收",
+    protocol: "40 位置 × 4 场景",
+  },
+] as const;
+
+const trainingPhases = [
+  { start: 0, end: 262_144, label: "固定开局巩固" },
+  { start: 262_144, end: 524_288, label: "任意位置泛化" },
+  { start: 524_288, end: 786_432, label: "脏盘可观测" },
+  { start: 786_432, end: 1_048_576, label: "困难开局强化" },
+  { start: 1_048_576, end: 1_179_648, label: "联合验收" },
+] as const;
 
 function formatTime(seconds: number) {
   const safe = Math.max(0, seconds);
@@ -586,6 +688,72 @@ type MotionState = {
   grillBurnTicksRemaining: number;
   servedOrders: number;
 };
+
+type PolicyReplayFrame = {
+  state: MotionState;
+  actionIndex: number;
+  action: AgentMotion["lastAction"];
+  reward: number;
+  cumulativeReward: number;
+  cumulativeSparseReward: number;
+  events: string[];
+};
+
+type PolicyReplay = {
+  schema: "nexus.burger.ppo-policy-replay.v1";
+  algorithm: "PPO";
+  execution: string;
+  checkpoint: string;
+  checkpointLabel: string;
+  scenarioId: PolicyScenarioId;
+  scenarioLabel: string;
+  startStage: string;
+  randomizedStart: boolean;
+  curriculumStage: string;
+  controlStepSeconds: number;
+  validatedEpisodes: number;
+  validatedSuccesses: number;
+  deliveries: number;
+  washedPlates: number;
+  fires: number;
+  firesExtinguished: number;
+  deliveryStep: number | null;
+  totalReward: number;
+  sparseReward: number;
+  frames: PolicyReplayFrame[];
+};
+
+type PolicyScenarioId = "standard" | "fire" | "dirty";
+
+const policyScenarioOptions: {
+  id: PolicyScenarioId;
+  source: string;
+  index: string;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: "standard",
+    source: "/ppo-policy-replay-standard.json",
+    index: "01",
+    label: "标准生产",
+    description: "随机位置 · 完整出餐循环",
+  },
+  {
+    id: "fire",
+    source: "/ppo-policy-replay-fire.json",
+    index: "02",
+    label: "灭火恢复",
+    description: "灶台起火 · 扑灭后恢复出餐",
+  },
+  {
+    id: "dirty",
+    source: "/ppo-policy-replay-dirty.json",
+    index: "03",
+    label: "脏盘回收",
+    description: "手持脏盘 · 洗净后恢复生产",
+  },
+];
 
 const WASH_DURATION_STEPS = 10;
 const PLATE_RETURN_DELAY_STEPS = 12;
@@ -1819,10 +1987,16 @@ function advanceMotionState(
 }
 
 export default function Home() {
-  const [agentCount, setAgentCount] = useState(4);
+  const [agentCount, setAgentCount] = useState(1);
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [configOpen, setConfigOpen] = useState(false);
+  const [policyScenario, setPolicyScenario] =
+    useState<PolicyScenarioId>("standard");
+  const [policyReplays, setPolicyReplays] = useState<
+    Partial<Record<PolicyScenarioId, PolicyReplay>>
+  >({});
+  const [policyFrameIndex, setPolicyFrameIndex] = useState(0);
   const boardRef = useRef<HTMLDivElement>(null);
 
   const map = maps[0];
@@ -1841,6 +2015,11 @@ export default function Home() {
   const [motionState, setMotionState] = useState(() =>
     createMotionState(orthogonalPaths),
   );
+  const policyReplay = policyReplays[policyScenario] ?? null;
+  const policyActive = agentCount === 1 && policyReplay !== null;
+  const activePolicyFrame = policyActive
+    ? policyReplay.frames[policyFrameIndex] ?? null
+    : null;
   const dirtyPlatesAtReturn = Number.isFinite(
     motionState.dirtyPlatesAtReturn,
   )
@@ -1908,14 +2087,20 @@ export default function Home() {
   const washingSecondsRemaining = washingActive
     ? washingAgent.workTicksRemaining * 0.42
     : 0;
-  const targetOrders = map.results[agentCount - 1];
+  const targetOrders = policyActive
+    ? policyReplay.deliveries
+    : map.results[agentCount - 1];
   const delivered = motionState.servedOrders ?? 0;
+  const episodeDurationSeconds = policyActive
+    ? (policyReplay.frames.at(-1)?.state.step ?? 0) *
+      policyReplay.controlStepSeconds
+    : 180;
   const tick = Math.min(
-    180,
+    episodeDurationSeconds,
     motionState.step * CONTROL_STEP_SECONDS,
   );
   const liveRate = tick > 10 ? (delivered / tick) * 60 : 0;
-  const progress = tick / 180;
+  const progress = tick / Math.max(episodeDurationSeconds, 1);
   const grillFood: FoodKind | null = motionState.grillFood ?? null;
   const grillFailureActive = grillFood === "burnt-beef";
   const grillProgress =
@@ -1964,6 +2149,9 @@ export default function Home() {
   );
   const agentTask = (index: number, motion: AgentMotion) => {
     if (motion.interactionLabel) return motion.interactionLabel;
+    if (policyActive && index === 0) {
+      return `PPO POLICY · ${motion.lastAction}`;
+    }
     if (motion.carrying) {
       const destinations = [
         "食材桌面",
@@ -2032,13 +2220,86 @@ export default function Home() {
     };
   });
   const selectedScale = scaleRows[agentCount - 1];
-  const liveSparseReward = delivered * 20;
+  const trainingMaxSteps = ppoTrainingProgress.at(-1)?.steps ?? 1;
+  const trainingX = (steps: number) => 74 + (steps / trainingMaxSteps) * 844;
+  const trainingY = (deliveriesPerEpisode: number) =>
+    246 - (deliveriesPerEpisode / 6) * 202;
+  const trainingLinePoints = ppoTrainingProgress
+    .map(
+      (point) =>
+        `${trainingX(point.steps)},${trainingY(point.deliveriesPerEpisode)}`,
+    )
+    .join(" ");
+  const latestTrainingPoint = ppoTrainingProgress.at(-1)!;
+  const liveSparseReward =
+    activePolicyFrame?.cumulativeSparseReward ?? delivered * 20;
   const liveFirePenalty =
     (motionState.firesStarted ?? 0) * FIRE_STARTED_PENALTY;
-  const liveEventReward = liveSparseReward + liveFirePenalty;
+  const liveEventReward =
+    activePolicyFrame?.cumulativeReward ??
+    liveSparseReward + liveFirePenalty;
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      policyScenarioOptions.map(async ({ id, source }) => {
+        const response = await fetch(source, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(
+            `Policy replay request failed for ${id}: ${response.status}`,
+          );
+        }
+        const replay = (await response.json()) as PolicyReplay;
+        if (
+          replay.schema !== "nexus.burger.ppo-policy-replay.v1" ||
+          replay.scenarioId !== id ||
+          replay.frames.length === 0
+        ) {
+          throw new Error(`Invalid ${id} policy replay`);
+        }
+        return [id, replay] as const;
+      }),
+    )
+      .then((entries) => {
+        if (cancelled) return;
+        const replays = Object.fromEntries(entries) as Record<
+          PolicyScenarioId,
+          PolicyReplay
+        >;
+        setPolicyReplays(replays);
+        setPolicyFrameIndex(0);
+        setMotionState(replays.standard.frames[0].state);
+      })
+      .catch((error: unknown) => {
+        console.error("Unable to load PPO policy replays", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const replay = policyReplays[policyScenario];
+    if (!replay) return;
+    setAgentCount(1);
+    setPolicyFrameIndex(0);
+    setMotionState(replay.frames[0].state);
+    setPlaying(true);
+  }, [policyReplays, policyScenario]);
 
   useEffect(() => {
     if (!playing) return;
+    if (policyActive) {
+      const timer = window.setInterval(() => {
+        setPolicyFrameIndex((current) => {
+          const next =
+            current >= policyReplay.frames.length - 1 ? 0 : current + 1;
+          setMotionState(policyReplay.frames[next].state);
+          return next;
+        });
+      }, (policyReplay.controlStepSeconds * 1000) / speed);
+      return () => window.clearInterval(timer);
+    }
     const timer = window.setInterval(() => {
       setMotionState((current) => {
         const episodeState =
@@ -2061,10 +2322,41 @@ export default function Home() {
     map,
     orthogonalPaths,
     playing,
+    policyActive,
+    policyReplay,
     speed,
   ]);
 
   const events = useMemo(() => {
+    if (policyActive && activePolicyFrame) {
+      const eventSummary =
+        activePolicyFrame.events.length > 0
+          ? activePolicyFrame.events.join(" · ")
+          : "no environment event";
+      return [
+        {
+          at: tick,
+          tone:
+            activePolicyFrame.events.includes("correct_delivery")
+              ? "green"
+              : "blue",
+          title: `PPO ACTION ${activePolicyFrame.action}`,
+          meta: `${eventSummary} · step reward ${activePolicyFrame.reward.toFixed(3)}`,
+        },
+        {
+          at: Math.max(0, tick - 2),
+          tone: "green",
+          title: `${policyReplay.checkpointLabel} · ${policyReplay.validatedSuccesses}/${policyReplay.validatedEpisodes} validated`,
+          meta: `${policyReplay.curriculumStage} · deterministic masked argmax · no scripted actions`,
+        },
+        {
+          at: Math.max(0, tick - 4),
+          tone: "muted",
+          title: `CUMULATIVE REWARD ${activePolicyFrame.cumulativeReward.toFixed(3)}`,
+          meta: `sparse ${activePolicyFrame.cumulativeSparseReward.toFixed(1)} · fire ${motionState.firesStarted}`,
+        },
+      ];
+    }
     const base = [
       {
         at: Math.max(2, tick - 2),
@@ -2159,6 +2451,7 @@ export default function Home() {
     }
     return base;
   }, [
+    activePolicyFrame,
     agentCount,
     delivered,
     grillFailureActive,
@@ -2170,6 +2463,8 @@ export default function Home() {
     discardedItems,
     nextPlateReturnSteps,
     pendingPlateReturnCount,
+    policyActive,
+    policyReplay,
     tick,
     washedPlates,
     washingActive,
@@ -2177,6 +2472,12 @@ export default function Home() {
   ]);
 
   function resetEpisode() {
+    if (policyActive) {
+      setPolicyFrameIndex(0);
+      setMotionState(policyReplay.frames[0].state);
+      setPlaying(true);
+      return;
+    }
     setMotionState(createMotionState(orthogonalPaths));
     setPlaying(true);
   }
@@ -2196,6 +2497,18 @@ export default function Home() {
   }
 
   function exportReplay() {
+    if (policyActive) {
+      const blob = new Blob([JSON.stringify(policyReplay, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `ppo-${policyReplay.checkpointLabel}-${policyReplay.curriculumStage}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     const payload = {
       schema: "nexus.burger.replay.v1",
       generated_at: new Date().toISOString(),
@@ -2286,7 +2599,9 @@ export default function Home() {
         <div className="top-actions">
           <span className="demo-badge">
             <i />
-            DETERMINISTIC SCRIPT · NO PPO/MAPPO
+            {policyActive
+              ? `PPO POLICY · ${policyReplay.scenarioLabel} · ${policyReplay.validatedSuccesses}/${policyReplay.validatedEpisodes} VALIDATED`
+              : "DETERMINISTIC ROLE POLICY · NO PPO/MAPPO"}
           </span>
           <button className="ghost-button" onClick={exportReplay}>
             <span aria-hidden="true">↓</span> 导出回放
@@ -2311,7 +2626,13 @@ export default function Home() {
           <span className="live-dot" />
           <div>
             <small>EPISODE STATUS</small>
-            <strong>{playing ? "确定性演示回放" : "已暂停"}</strong>
+            <strong>
+              {playing
+                ? policyActive
+                  ? "PPO 策略回放"
+                  : "确定性演示回放"
+                : "已暂停"}
+            </strong>
           </div>
           <span className="run-id">RUN 0240</span>
         </div>
@@ -2344,6 +2665,64 @@ export default function Home() {
             <p className="scenario-note">
               参考 Overcooked 官方紧凑关卡：外围连续工作台包围中央实体岛台，只保留左右两个单格交汇口。
             </p>
+          </div>
+
+          <div className="control-block replay-scenario-block">
+            <label>PPO 开局场景</label>
+            <div
+              className="policy-scenario-options"
+              role="tablist"
+              aria-label="选择 PPO 开局场景"
+            >
+              {policyScenarioOptions.map((scenario) => {
+                const replay = policyReplays[scenario.id];
+                const selected = policyScenario === scenario.id;
+                return (
+                  <button
+                    key={scenario.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={selected ? "selected" : ""}
+                    onClick={() => setPolicyScenario(scenario.id)}
+                  >
+                    <span
+                      className={`scenario-glyph scenario-glyph-${scenario.id}`}
+                      aria-hidden="true"
+                    >
+                      {scenario.id === "standard"
+                        ? "●"
+                        : scenario.id === "fire"
+                          ? "▲"
+                          : "≋"}
+                    </span>
+                    <span>
+                      <strong>{scenario.label}</strong>
+                      <small>{scenario.description}</small>
+                    </span>
+                    <b>{scenario.index}</b>
+                    <i className="scenario-load-state">
+                      {replay ? "READY" : "LOAD"}
+                    </i>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="policy-scenario-summary">
+              <span>
+                {policyReplay
+                  ? `${policyReplay.deliveries} 份送餐`
+                  : "正在载入 PPO 回放"}
+              </span>
+              {policyReplay && (
+                <span>
+                  {policyScenario === "fire"
+                    ? `灭火 ${policyReplay.firesExtinguished} 次`
+                    : `洗净 ${policyReplay.washedPlates} 个盘子`}
+                </span>
+              )}
+              <b>POLICY ONLY</b>
+            </div>
           </div>
 
           <div className="control-block workflow-block">
@@ -2400,7 +2779,12 @@ export default function Home() {
                   className={agentCount === count ? "selected" : ""}
                   onClick={() => {
                     setAgentCount(count);
-                    setMotionState(createMotionState(orthogonalPaths));
+                    if (count === 1 && policyReplay) {
+                      setPolicyFrameIndex(0);
+                      setMotionState(policyReplay.frames[0].state);
+                    } else {
+                      setMotionState(createMotionState(orthogonalPaths));
+                    }
                   }}
                 >
                   {count}
@@ -2535,6 +2919,11 @@ export default function Home() {
                 <p>{map.subtitle}</p>
               </div>
               <div className="sim-head-actions">
+                {policyActive && (
+                  <span className="policy-chip">
+                    PPO · {policyReplay.curriculumStage.toUpperCase()}
+                  </span>
+                )}
                 <span className="view-mode-chip">
                   <i aria-hidden="true" />
                   2.5D 立体视角
@@ -2937,7 +3326,7 @@ export default function Home() {
 
               <div className="game-timer">
                 <span>TIME LEFT</span>
-                <strong>{formatTime(180 - tick)}</strong>
+                <strong>{formatTime(episodeDurationSeconds - tick)}</strong>
                 <i style={{ width: `${(1 - progress) * 100}%` }} />
               </div>
 
@@ -2963,7 +3352,9 @@ export default function Home() {
                 <b style={{ left: `${progress * 100}%` }} />
                 <span className="failure-marker" style={{ left: "68%" }} />
               </div>
-              <span className="duration">03:00</span>
+              <span className="duration">
+                {formatTime(episodeDurationSeconds)}
+              </span>
               <button
                 className="speed-button"
                 onClick={() => setSpeed((value) => (value === 4 ? 1 : value * 2))}
@@ -2976,7 +3367,9 @@ export default function Home() {
               <div>
                 <span>已完成订单</span>
                 <strong>{delivered}</strong>
-                <small>/ {targetOrders} 目标轨迹</small>
+                <small>
+                  / {targetOrders} {policyActive ? "验证轨迹" : "目标轨迹"}
+                </small>
               </div>
               <div>
                 <span>实时吞吐</span>
@@ -2985,9 +3378,9 @@ export default function Home() {
               </div>
               <div>
                 <span>累计事件奖励</span>
-                <strong>{liveEventReward}</strong>
+                <strong>{liveEventReward.toFixed(2)}</strong>
                 <small>
-                  出餐 {liveSparseReward} · 起火 {liveFirePenalty}
+                  出餐 {liveSparseReward.toFixed(1)} · 起火 {liveFirePenalty}
                 </small>
               </div>
               <div>
@@ -3098,12 +3491,22 @@ export default function Home() {
             <button
               className={`fault-button ${grillFailureActive ? "active" : ""}`}
               onClick={injectFault}
-              disabled={grillFailureActive}
+              disabled={grillFailureActive || policyActive}
             >
               <span aria-hidden="true">🔥</span>
               <div>
-                <strong>{grillFailureActive ? "恢复策略执行中" : "注入煎台过火故障"}</strong>
-                <small>生成可回流 Failure Case</small>
+                <strong>
+                  {policyActive
+                    ? "PPO 回放保持只读"
+                    : grillFailureActive
+                      ? "恢复策略执行中"
+                      : "注入煎台过火故障"}
+                </strong>
+                <small>
+                  {policyActive
+                    ? "切换到 2–4 主体演示后可注入"
+                    : "生成可回流 Failure Case"}
+                </small>
               </div>
             </button>
           </section>
@@ -3134,6 +3537,190 @@ export default function Home() {
         </div>
 
         <div className="benchmark-grid">
+          <div className="training-progress-card panel">
+            <div className="training-progress-head">
+              <div>
+                <span>SINGLE-AGENT PPO · EVALUATED CHECKPOINTS</span>
+                <strong>训练步数与每局平均送餐数</strong>
+                <small>
+                  主指标为固定 429-step（约 180 秒）评估中的平均送餐数；每分钟送餐数
+                  仅作时长归一化参考。虚线前为固定开局，之后均为随机位置评估。
+                </small>
+              </div>
+              <div className="training-latest">
+                <span>最新策略</span>
+                <strong>
+                  {latestTrainingPoint.deliveriesPerEpisode.toFixed(2)}
+                </strong>
+                <small>
+                  份 / 局 · {latestTrainingPoint.dpm.toFixed(3)} 份 / 分钟
+                </small>
+                <small>标准 5.675 · 脏盘 5.225 · 缺盘 4.700 · 过火 5.250</small>
+              </div>
+            </div>
+
+            <div className="training-chart-scroll">
+              <svg
+                className="training-progress-chart"
+                viewBox="0 0 960 304"
+                role="img"
+                aria-labelledby="ppo-progress-title ppo-progress-description"
+              >
+                <title id="ppo-progress-title">
+                  单智能体 PPO 每局平均送餐数随训练步数变化
+                </title>
+                <desc id="ppo-progress-description">
+                  五个连续训练阶段共采样 1179648 个环境步。最新 checkpoint 在标准、
+                  脏盘、缺盘与过火各 40 个固定位置上的联合均值为每局 5.2125 份。
+                </desc>
+
+                {trainingPhases.map((phase, index) => {
+                  const x = trainingX(phase.start);
+                  const width = trainingX(phase.end) - x;
+                  return (
+                    <g key={phase.label}>
+                      <rect
+                        className={`training-phase-band phase-band-${index + 1}`}
+                        x={x}
+                        y="20"
+                        width={width}
+                        height="226"
+                      />
+                      <text
+                        className="training-phase-label"
+                        x={x + width / 2}
+                        y="34"
+                        textAnchor="middle"
+                      >
+                        {phase.label}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {[0, 1.5, 3, 4.5, 6].map((tickValue) => (
+                  <g key={`y-${tickValue}`}>
+                    <line
+                      className="training-gridline"
+                      x1="74"
+                      x2="918"
+                      y1={trainingY(tickValue)}
+                      y2={trainingY(tickValue)}
+                    />
+                    <text
+                      className="training-axis-label"
+                      x="62"
+                      y={trainingY(tickValue) + 3}
+                      textAnchor="end"
+                    >
+                      {tickValue.toFixed(2)}
+                    </text>
+                  </g>
+                ))}
+
+                {[0, 262_144, 524_288, 786_432, 1_048_576, 1_179_648].map(
+                  (tickValue) => (
+                    <g key={`x-${tickValue}`}>
+                      <line
+                        className="training-axis-tick"
+                        x1={trainingX(tickValue)}
+                        x2={trainingX(tickValue)}
+                        y1="246"
+                        y2="252"
+                      />
+                      <text
+                        className="training-axis-label"
+                        x={trainingX(tickValue)}
+                        y="268"
+                        textAnchor="middle"
+                      >
+                        {tickValue === 0
+                          ? "0"
+                          : tickValue >= 1_000_000
+                            ? `${(tickValue / 1_000_000).toFixed(2)}M`
+                            : `${Math.round(tickValue / 1_000)}k`}
+                      </text>
+                    </g>
+                  ),
+                )}
+
+                <line
+                  className="training-protocol-boundary"
+                  x1={trainingX(262_144)}
+                  x2={trainingX(262_144)}
+                  y1="20"
+                  y2="246"
+                />
+                <text
+                  className="training-boundary-label"
+                  x={trainingX(262_144) + 7}
+                  y="57"
+                >
+                  切换为随机位置评估
+                </text>
+
+                <polyline
+                  className="training-progress-line"
+                  points={trainingLinePoints}
+                />
+                {ppoTrainingProgress.map((point, index) => (
+                  <g key={`${point.steps}-${point.phase}`}>
+                    <circle
+                      className={
+                        index === ppoTrainingProgress.length - 1
+                          ? "training-progress-point latest"
+                          : "training-progress-point"
+                      }
+                      cx={trainingX(point.steps)}
+                      cy={trainingY(point.deliveriesPerEpisode)}
+                      r={index === ppoTrainingProgress.length - 1 ? 5 : 3.5}
+                    >
+                      <title>
+                        {`${point.phase} · ${point.steps.toLocaleString()} 步 · ${point.deliveriesPerEpisode.toFixed(2)} 份/局 · ${point.dpm.toFixed(3)} 份/分钟 · ${point.protocol}`}
+                      </title>
+                    </circle>
+                  </g>
+                ))}
+
+                <line
+                  className="training-latest-guide"
+                  x1={trainingX(latestTrainingPoint.steps)}
+                  x2={trainingX(latestTrainingPoint.steps)}
+                  y1={trainingY(latestTrainingPoint.deliveriesPerEpisode)}
+                  y2="246"
+                />
+                <text
+                  className="training-latest-label"
+                  x={trainingX(latestTrainingPoint.steps) - 8}
+                  y={trainingY(latestTrainingPoint.deliveriesPerEpisode) - 11}
+                  textAnchor="end"
+                >
+                  最新 {latestTrainingPoint.deliveriesPerEpisode.toFixed(2)} 份/局
+                </text>
+                <text
+                  className="training-axis-title"
+                  x="496"
+                  y="294"
+                  textAnchor="middle"
+                >
+                  累计采样环境步数
+                </text>
+              </svg>
+            </div>
+            <div className="training-progress-foot">
+              <span>
+                <i className="progress-line-key" /> 每局平均送餐数（主指标）
+              </span>
+              <span>
+                <i className="protocol-key" /> 评估协议切换
+              </span>
+              <p>
+                786k 处的回落触发回滚到该阶段最佳 checkpoint，再进行困难开局强化；
+                曲线保留该回落，避免只展示最佳结果。
+              </p>
+            </div>
+          </div>
+
           <div className="scale-card panel">
             <div className="scale-card-head">
               <div>
@@ -3491,8 +4078,8 @@ export default function Home() {
             <div className="modal-note">
               <span>说明</span>
               <p>
-                当前网页是确定性规则脚本的可视化回放，没有 PPO 或 MAPPO
-                训练结果。正式训练只允许 standalone BurgerEnv
+                单主体视图回放当前已部署的 PPO checkpoint；2–4 主体仍是确定性规则演示，
+                不是 MAPPO 训练结果。正式训练只允许 standalone BurgerEnv
                 裁决移动、相邻且无需朝向的上下文动作、原子取放、熟牛肉必须用餐盘承接、计时、物料守恒和团队奖励；网页无权改写状态或计分。
               </p>
             </div>

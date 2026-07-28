@@ -18,7 +18,7 @@ environment:
   ready_pickup_window_steps: 16
   wash_steps: 10
   plate_return_steps: 12
-  actor_observation: local_world_aligned_26x9x9
+  actor_observation: local_world_aligned_29x9x9_with_self_pose
   critic_observation: authoritative_global_state
 
 training:
@@ -46,7 +46,7 @@ reward:
   correct_delivery: 20.0
   fire_started: -5.0
   blocked_or_collision: -0.05
-  time_step: -0.01
+  time_step: 0.0
   potential_scale: 1.0
   potential_gamma_must_equal_training_gamma: true
   invalid_or_repeated_interaction: 0.0

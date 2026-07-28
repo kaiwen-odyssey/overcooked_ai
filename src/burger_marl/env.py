@@ -17,7 +17,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import random
+from collections import deque
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from burger_marl.actions import Action, Direction
@@ -82,6 +85,12 @@ CONTENTS_TO_PLATE = {
     contents: item for item, contents in PLATE_CONTENTS.items()
 }
 PLATE_ITEMS = set(PLATE_CONTENTS) | {"dirty_plate"}
+# Keep every non-terminal potential non-negative. This preserves the
+# telescoping shaping contract while ensuring a finite-rollout state cycle
+# cannot profit merely by lingering in a negative-potential recovery state.
+POTENTIAL_FLOOR = 18.0
+
+
 @dataclass(frozen=True)
 class BurgerLayout:
     """Static terrain and player spawn contract."""
@@ -126,11 +135,11 @@ class BurgerLayout:
                 "Burger layout missing required stations: {}".format(sorted(missing))
             )
 
-    @property
+    @cached_property
     def width(self) -> int:
         return len(self.rows[0])
 
-    @property
+    @cached_property
     def height(self) -> int:
         return len(self.rows)
 
@@ -140,7 +149,7 @@ class BurgerLayout:
             return None
         return self.rows[y][x]
 
-    @property
+    @cached_property
     def valid_player_positions(self) -> frozenset[Point]:
         return frozenset(
             (x, y)
@@ -163,6 +172,33 @@ CRAMPED_GALLEY = BurgerLayout(
         "WDXXXXRS",
     ),
     player_starts=((0, 1), (3, 1), (1, 6), (7, 6)),
+)
+
+CURRICULUM_START_STAGES = (
+    "standard",
+    "serve_ready",
+    "grill_ready",
+    "cook_ready",
+    "plate_ready",
+    "plate_pick_ready",
+    "rack_ready",
+    "raw_ready",
+    "grill_approach_ready",
+    "beef_carry_ready",
+    "beef_pick_ready",
+    "wash_ready",
+    "wash_required_ready",
+    "sink_drop_ready",
+    "dirty_plate_carry_ready",
+    "dirty_return_ready",
+    "second_dish_ready",
+    "plate_exhausted_ready",
+    "fire_recovery_ready",
+    "fire_plate_drop_ready",
+    "fire_plate_parked_ready",
+    "fire_extinguisher_pick_ready",
+    "fire_extinguisher_carry_ready",
+    "fire_suppress_ready",
 )
 
 
@@ -204,11 +240,38 @@ class BurgerState:
 @dataclass(frozen=True)
 class BurgerRewardConfig:
     correct_delivery: float = 20.0
+    # Curriculum milestone events remain observable in the reward breakdown,
+    # but the final task objective gives them no standalone positive reward.
+    # Learning guidance comes from policy-invariant potential shaping instead.
+    raw_beef_placed: float = 0.0
+    dirty_plate_pickup: float = 0.0
+    wash_started: float = 0.0
+    wash_progress: float = 0.0
+    plate_washed: float = 0.0
+    fire_extinguished: float = 0.0
     fire_started: float = -5.0
+    # Charge for every transition that ends with the grill still burning.
+    # Extinguishing immediately therefore pays no recurring cost, while each
+    # delayed control step is strictly worse. Unlike an extinguish bonus this
+    # signal cannot be farmed by repeatedly creating and clearing fires.
+    fire_active: float = -0.25
+    # Safety cost only: while the grill is burning, touching ingredient
+    # dispensers delays the extinguisher response and can strand unusable raw
+    # food on a counter. The official gameplay action remains legal.
+    fire_food_handling: float = -2.0
+    # Parking a dirty plate can be legal (for example to answer a fire), but
+    # repeated counter drop/pickup cycles waste throughput. A small handling
+    # cost breaks that loop without forbidding the gameplay action.
+    dirty_plate_counter_handling: float = -0.25
     collision: float = -0.05
-    time_step: float = -0.01
+    # A constant step cost cannot change a fixed-horizon throughput objective.
+    # Keep it zero so the unshaped return is dominated by real deliveries.
+    time_step: float = 0.0
     potential_scale: float = 1.0
-    gamma: float = 0.99
+    navigation_potential_scale: float = 1.0
+    # Match the long-horizon PPO default so one-cell navigation and one-tick
+    # work progress remain positive after bounded potential shaping.
+    gamma: float = 0.999
 
 
 @dataclass(frozen=True)
@@ -263,6 +326,64 @@ class BurgerGridworld:
     ) -> None:
         self.layout = layout
         self.config = config
+        self._station_distances = {
+            terrain: self._distance_field_for_station(terrain)
+            for terrain in (
+                BUN_DISPENSER,
+                LETTUCE_DISPENSER,
+                BEEF_DISPENSER,
+                GRILL,
+                PLATE_RACK,
+                SINK,
+                SERVE,
+                RETURN,
+                EXTINGUISHER,
+            )
+        }
+        self._counter_distances = {
+            (x, y): self._distance_field_for_position((x, y))
+            for y, row in enumerate(self.layout.rows)
+            for x, terrain in enumerate(row)
+            if terrain == COUNTER
+        }
+
+    def _distance_field_for_station(
+        self, terrain: str
+    ) -> Dict[Point, int]:
+        stations = [
+            (x, y)
+            for y, row in enumerate(self.layout.rows)
+            for x, cell in enumerate(row)
+            if cell == terrain
+        ]
+        if len(stations) != 1:
+            return {}
+        return self._distance_field_for_position(stations[0])
+
+    def _distance_field_for_position(
+        self, station: Point
+    ) -> Dict[Point, int]:
+        goals = [
+            Action.move_in_direction(station, direction)
+            for direction in Direction.ALL_DIRECTIONS
+            if self.layout.terrain_at(
+                Action.move_in_direction(station, direction)
+            )
+            == FLOOR
+        ]
+        distances = {goal: 0 for goal in goals}
+        queue = deque(goals)
+        while queue:
+            position = queue.popleft()
+            for direction in Direction.ALL_DIRECTIONS:
+                neighbor = Action.move_in_direction(position, direction)
+                if (
+                    neighbor not in distances
+                    and self.layout.terrain_at(neighbor) == FLOOR
+                ):
+                    distances[neighbor] = distances[position] + 1
+                    queue.append(neighbor)
+        return distances
 
     def get_standard_start_state(self, num_players: int = 4) -> BurgerState:
         if not 1 <= num_players <= len(self.layout.player_starts):
@@ -279,6 +400,242 @@ class BurgerGridworld:
         self.validate_state(state)
         return state
 
+    def get_start_state(
+        self,
+        num_players: int = 4,
+        stage: str = "standard",
+    ) -> BurgerState:
+        """Return a legal reset state for direct-PPO reverse curriculum."""
+
+        if stage not in CURRICULUM_START_STAGES:
+            raise ValueError("Unknown curriculum start stage: {!r}".format(stage))
+        state = self.get_standard_start_state(num_players)
+        if stage == "standard":
+            return state
+        if num_players != 1:
+            raise ValueError(
+                "Curriculum start states support one active agent only"
+            )
+
+        def station_position(terrain: str) -> Point:
+            matches = [
+                (x, y)
+                for y, row in enumerate(self.layout.rows)
+                for x, cell in enumerate(row)
+                if cell == terrain
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "Curriculum requires one {!r} station".format(terrain)
+                )
+            return matches[0]
+
+        def adjacent_floor(terrain: str) -> Point:
+            target = station_position(terrain)
+            for direction in Direction.ALL_DIRECTIONS:
+                candidate = Action.move_in_direction(target, direction)
+                if self.layout.terrain_at(candidate) == FLOOR:
+                    return candidate
+            raise ValueError(
+                "Curriculum station {!r} has no adjacent floor".format(terrain)
+            )
+
+        def counter_with_adjacent_floor(
+            nearest_to: Optional[str] = None,
+        ) -> Tuple[Point, Point]:
+            candidates: List[Tuple[Point, Point]] = []
+            for y, row in enumerate(self.layout.rows):
+                for x, terrain in enumerate(row):
+                    if terrain != COUNTER:
+                        continue
+                    counter = (x, y)
+                    for direction in Direction.ALL_DIRECTIONS:
+                        candidate = Action.move_in_direction(
+                            counter, direction
+                        )
+                        if self.layout.terrain_at(candidate) == FLOOR:
+                            candidates.append((counter, candidate))
+                            break
+            if candidates:
+                if nearest_to is None:
+                    return candidates[0]
+                target = station_position(nearest_to)
+                return min(
+                    candidates,
+                    key=lambda item: (
+                        abs(item[0][0] - target[0])
+                        + abs(item[0][1] - target[1]),
+                        item,
+                    ),
+                )
+            raise ValueError(
+                "Curriculum requires a counter beside walkable floor"
+            )
+
+        player = state.players[0]
+        if stage == "serve_ready":
+            player.position = adjacent_floor(SERVE)
+            player.held_object = "plated_burger"
+            state.clean_plates -= 1
+        elif stage in {"grill_ready", "cook_ready"}:
+            player.position = adjacent_floor(GRILL)
+            player.held_object = "plate_bun_lettuce"
+            state.clean_plates -= 1
+            state.grill = GrillState(
+                food=(
+                    "cooked_beef"
+                    if stage == "grill_ready"
+                    else "raw_beef"
+                ),
+                cook_ticks=(
+                    self.config.cook_steps
+                    if stage == "grill_ready"
+                    else 0
+                ),
+                ready_ticks=0,
+            )
+        elif stage == "plate_ready":
+            player.position = adjacent_floor(PLATE_RACK)
+            player.held_object = "clean_plate"
+            state.clean_plates -= 1
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage == "plate_pick_ready":
+            player.position = adjacent_floor(PLATE_RACK)
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage == "rack_ready":
+            player.position = adjacent_floor(GRILL)
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage == "raw_ready":
+            player.position = adjacent_floor(GRILL)
+            player.held_object = "raw_beef"
+        elif stage == "grill_approach_ready":
+            candidates = [
+                position
+                for position, distance in self._station_distances[
+                    GRILL
+                ].items()
+                if distance == 1
+            ]
+            if not candidates:
+                raise ValueError(
+                    "Curriculum grill has no one-step approach cell"
+                )
+            player.position = min(
+                candidates,
+                key=lambda position: self._station_distances[
+                    BEEF_DISPENSER
+                ].get(position, self.layout.width * self.layout.height),
+            )
+            player.held_object = "raw_beef"
+        elif stage == "beef_carry_ready":
+            player.position = adjacent_floor(BEEF_DISPENSER)
+            player.held_object = "raw_beef"
+        elif stage == "beef_pick_ready":
+            player.position = adjacent_floor(BEEF_DISPENSER)
+        elif stage == "wash_ready":
+            player.position = adjacent_floor(SINK)
+            state.clean_plates -= 1
+            state.sink = SinkState(has_dirty_plate=True, wash_progress=0)
+        elif stage == "wash_required_ready":
+            player.position = adjacent_floor(SINK)
+            state.clean_plates = 0
+            state.dirty_plates_at_return = state.total_plates - 1
+            state.sink = SinkState(has_dirty_plate=True, wash_progress=0)
+            state.delivered_orders = state.total_plates
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage in {"sink_drop_ready", "dirty_plate_carry_ready"}:
+            player.position = adjacent_floor(
+                SINK
+                if stage == "sink_drop_ready"
+                else RETURN
+            )
+            player.held_object = "dirty_plate"
+            state.clean_plates = 0
+            state.dirty_plates_at_return = state.total_plates - 1
+            state.delivered_orders = state.total_plates
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage == "dirty_return_ready":
+            player.position = adjacent_floor(RETURN)
+            state.clean_plates -= 1
+            state.dirty_plates_at_return = 1
+        elif stage == "second_dish_ready":
+            player.position = adjacent_floor(RETURN)
+            state.clean_plates -= 1
+            state.dirty_plates_at_return = 1
+            state.delivered_orders = 1
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage == "plate_exhausted_ready":
+            player.position = adjacent_floor(RETURN)
+            state.clean_plates = 0
+            state.dirty_plates_at_return = state.total_plates
+            state.delivered_orders = state.total_plates
+            state.grill = GrillState(
+                food="raw_beef",
+                cook_ticks=0,
+                ready_ticks=0,
+            )
+        elif stage == "fire_recovery_ready":
+            player.position = adjacent_floor(EXTINGUISHER)
+            player.held_object = "clean_plate"
+            state.clean_plates -= 1
+            state.grill = GrillState(food="burnt_beef")
+        elif stage in {
+            "fire_plate_drop_ready",
+            "fire_plate_parked_ready",
+            "fire_extinguisher_pick_ready",
+            "fire_extinguisher_carry_ready",
+            "fire_suppress_ready",
+        }:
+            counter, beside_counter = counter_with_adjacent_floor(
+                GRILL if stage == "fire_plate_parked_ready" else None
+            )
+            state.clean_plates -= 1
+            state.grill = GrillState(food="burnt_beef")
+            if stage == "fire_plate_drop_ready":
+                player.position = beside_counter
+                player.held_object = "clean_plate"
+            elif stage == "fire_plate_parked_ready":
+                player.position = beside_counter
+                state.counter_objects[counter] = "plate_bun_lettuce"
+            else:
+                state.counter_objects[counter] = "clean_plate"
+                if stage == "fire_extinguisher_pick_ready":
+                    player.position = adjacent_floor(EXTINGUISHER)
+                elif stage == "fire_extinguisher_carry_ready":
+                    player.position = adjacent_floor(EXTINGUISHER)
+                    player.held_object = "extinguisher"
+                    state.extinguisher_available = False
+                else:
+                    player.position = adjacent_floor(GRILL)
+                    player.held_object = "extinguisher"
+                    state.extinguisher_available = False
+        self.validate_state(state)
+        return state
+
     def get_state_transition(
         self, state: BurgerState, joint_action: Sequence[object]
     ) -> BurgerTransition:
@@ -292,8 +649,34 @@ class BurgerGridworld:
         events: List[Dict[str, object]] = []
 
         self._resolve_interacts(new_state, joint_action, events)
+        if state.grill.food == "burnt_beef":
+            unrelated_food_events = {
+                "dispenser_pickup",
+                "ingredient_added_from_dispenser",
+            }
+            events.extend(
+                {
+                    "type": "fire_food_handling",
+                    "agent": event.get("agent"),
+                    "source_event": event["type"],
+                }
+                for event in tuple(events)
+                if event["type"] in unrelated_food_events
+            )
+        events.extend(
+            {
+                "type": "dirty_plate_counter_handling",
+                "agent": event.get("agent"),
+                "source_event": event["type"],
+            }
+            for event in tuple(events)
+            if event["type"] in {"counter_drop", "counter_pickup"}
+            and event.get("item") == "dirty_plate"
+        )
         self._resolve_movement(new_state, joint_action, events)
         self._step_environment_effects(new_state, events)
+        if new_state.grill.food == "burnt_beef":
+            events.append({"type": "fire_active"})
         self.validate_state(new_state)
 
         done = new_state.timestep >= self.config.horizon
@@ -992,16 +1375,215 @@ class BurgerGridworld:
             "cooked_beef" in world_items
             or "cooked_beef" in plated_contents
         )
-        has_plate = any(item in PLATE_ITEMS for item in world_items)
+        # A dirty plate is conserved physical inventory, but it cannot receive
+        # ingredients and must not count as recipe assembly progress.
+        has_plate = any(item in PLATE_CONTENTS for item in world_items)
         has_burger = "plated_burger" in world_items
-        return float(
-            has_bun
-            + has_lettuce
+        grill_raw = state.grill.food == "raw_beef"
+        cooking_started = (
+            state.grill.food in {"raw_beef", "cooked_beef"}
+            or has_cooked
+            or has_burger
+        )
+        grill_progress = (
+            state.grill.cook_ticks / self.config.cook_steps
+            if grill_raw
+            else 0.0
+        )
+        recipe_progress = float(
+            cooking_started * has_bun
+            + cooking_started * has_lettuce
             + 0.5 * has_raw
-            + has_cooked
-            + has_plate
+            + 0.5 * grill_raw
+            + 0.5 * grill_progress
+            + 1.5 * has_cooked
+            + cooking_started * has_plate
             + 2 * has_burger
         )
+        partial_plate_items = [
+            item
+            for item in world_items
+            if item in PLATE_CONTENTS
+            and 0 < len(PLATE_CONTENTS[item]) < 3
+        ]
+        partial_plate_parked = any(
+            item in PLATE_CONTENTS
+            and 0 < len(PLATE_CONTENTS[item]) < 3
+            for item in state.counter_objects.values()
+        )
+        beef_workflow_active = bool(
+            has_raw
+            or state.grill.food in {"raw_beef", "cooked_beef"}
+            or has_cooked
+        )
+        # Parking an incomplete plate is a required, conserved state change
+        # when the hand must be freed to fetch raw beef. Keep that workflow
+        # phase active while beef is being prepared so the correct drop does
+        # not create a local potential valley. Because this is part of Phi(s),
+        # dropping and immediately picking the plate back still telescopes to
+        # a net loss and cannot be farmed for reward.
+        assembly_workflow_progress = (
+            0.75
+            if partial_plate_parked
+            or (partial_plate_items and beef_workflow_active)
+            else 0.0
+        )
+        dish_cycle_progress = 0.0
+        if state.clean_plates == 0:
+            held_items = {
+                player.held_object
+                for player in state.players
+                if player.held_object is not None
+            }
+            if "dirty_plate" in held_items:
+                dish_cycle_progress = 0.5
+            elif state.sink.has_dirty_plate:
+                dish_cycle_progress = (
+                    0.5
+                    + 0.5
+                    * state.sink.wash_progress
+                    / self.config.wash_steps
+                )
+            elif any(item in PLATE_CONTENTS for item in world_items):
+                dish_cycle_progress = 1.0
+        fire_recovery_potential = 0.0
+        if state.grill.food == "burnt_beef":
+            held_items = [
+                player.held_object for player in state.players
+            ]
+            if "extinguisher" in held_items:
+                fire_recovery_potential = -6.0
+            elif None in held_items:
+                fire_recovery_potential = -9.0
+            else:
+                # Freeing the hand is the largest recovery bottleneck. Make
+                # immediately taking the parked item back a clear regression.
+                fire_recovery_potential = -18.0
+        elif any(
+            player.held_object == "extinguisher"
+            for player in state.players
+        ):
+            # Clearing the grill is not the end of recovery: the conserved
+            # extinguisher must be returned before cooking can resume.
+            fire_recovery_potential = -3.0
+        return (
+            POTENTIAL_FLOOR
+            + recipe_progress
+            + assembly_workflow_progress
+            + dish_cycle_progress
+            + fire_recovery_potential
+            + self.config.reward.navigation_potential_scale
+            * self._single_agent_navigation_potential(state)
+        )
+
+    def _single_agent_navigation_potential(
+        self, state: BurgerState
+    ) -> float:
+        """Dense path progress for PPO, expressed only as state potential."""
+
+        if len(state.players) != 1:
+            return 0.0
+        player = state.players[0]
+        held = player.held_object
+        target: Optional[str] = None
+        if state.grill.food == "burnt_beef":
+            if held == "extinguisher":
+                target = GRILL
+            elif held is None:
+                target = EXTINGUISHER
+            else:
+                # A hand must be freed before the extinguisher can be taken.
+                return self._counter_navigation_potential(
+                    state, player.position, require_empty=True
+                )
+        elif held == "extinguisher":
+            target = EXTINGUISHER
+        elif held == "plated_burger":
+            target = SERVE
+        elif held == "dirty_plate":
+            target = SINK
+        elif held == "raw_beef" and state.grill.food is None:
+            target = GRILL
+        elif held in PLATE_CONTENTS:
+            contents = PLATE_CONTENTS[held]
+            if state.grill.food is None:
+                if held == "clean_plate":
+                    target = PLATE_RACK
+                else:
+                    # A partial plate cannot take raw beef directly. Park it
+                    # on an empty worktop before fetching beef for the grill.
+                    return self._counter_navigation_potential(
+                        state, player.position, require_empty=True
+                    )
+            elif "bun" not in contents:
+                target = BUN_DISPENSER
+            elif "lettuce" not in contents:
+                target = LETTUCE_DISPENSER
+            elif "cooked_beef" not in contents:
+                target = GRILL
+        elif held is None:
+            if (
+                state.clean_plates == 0
+                and state.sink.has_dirty_plate
+            ):
+                target = SINK
+            elif (
+                state.clean_plates == 0
+                and (
+                    state.dirty_plates_at_return > 0
+                    or state.pending_plate_returns
+                )
+            ):
+                target = RETURN
+            elif state.grill.food is None:
+                target = BEEF_DISPENSER
+            elif state.clean_plates == 0 and any(
+                item in PLATE_CONTENTS
+                for item in state.counter_objects.values()
+            ):
+                # A washed plate may have been parked on a worktop during
+                # fire recovery. The empty rack is not a valid objective.
+                return self._counter_navigation_potential(
+                    state,
+                    player.position,
+                    require_plate=True,
+                )
+            else:
+                target = PLATE_RACK
+        if target is None:
+            return 0.0
+        distance = self._station_distances.get(target, {}).get(
+            player.position
+        )
+        if distance is None:
+            return 0.0
+        normalizer = max(self.layout.width + self.layout.height - 2, 1)
+        return max(0.0, 1.0 - distance / normalizer)
+
+    def _counter_navigation_potential(
+        self,
+        state: BurgerState,
+        position: Point,
+        *,
+        require_empty: bool = False,
+        require_plate: bool = False,
+    ) -> float:
+        """Shortest-path potential to a context-valid worktop objective."""
+
+        distances = []
+        for counter, distance_field in self._counter_distances.items():
+            item = state.counter_objects.get(counter)
+            if require_empty and item is not None:
+                continue
+            if require_plate and item not in PLATE_CONTENTS:
+                continue
+            distance = distance_field.get(position)
+            if distance is not None:
+                distances.append(distance)
+        if not distances:
+            return 0.0
+        normalizer = max(self.layout.width + self.layout.height - 2, 1)
+        return max(0.0, 1.0 - min(distances) / normalizer)
 
     def _reward_breakdown(
         self,
@@ -1017,7 +1599,26 @@ class BurgerGridworld:
         return {
             "correct_delivery": counts.get("correct_delivery", 0)
             * reward.correct_delivery,
+            "raw_beef_placed": counts.get("raw_beef_placed", 0)
+            * reward.raw_beef_placed,
+            "dirty_plate_pickup": counts.get("dirty_plate_pickup", 0)
+            * reward.dirty_plate_pickup,
+            "wash_started": counts.get("wash_started", 0)
+            * reward.wash_started,
+            "wash_progress": counts.get("wash_progress", 0)
+            * reward.wash_progress,
+            "plate_washed": counts.get("plate_washed", 0)
+            * reward.plate_washed,
+            "fire_extinguished": counts.get("fire_extinguished", 0)
+            * reward.fire_extinguished,
             "fire_started": counts.get("fire_started", 0) * reward.fire_started,
+            "fire_active": counts.get("fire_active", 0) * reward.fire_active,
+            "fire_food_handling": counts.get("fire_food_handling", 0)
+            * reward.fire_food_handling,
+            "dirty_plate_counter_handling": counts.get(
+                "dirty_plate_counter_handling", 0
+            )
+            * reward.dirty_plate_counter_handling,
             "collision": counts.get("collision", 0) * reward.collision,
             "time_step": reward.time_step,
             "potential": reward.potential_scale
@@ -1180,28 +1781,159 @@ class BurgerEnv:
         self,
         mdp: Optional[BurgerGridworld] = None,
         num_players: int = 4,
+        start_stage: str = "standard",
+        randomize_player_positions: bool = False,
+        random_start_max_objective_distance: Optional[int] = None,
+        random_start_candidate_positions: Sequence[Point] = (),
     ) -> None:
+        if (
+            random_start_max_objective_distance is not None
+            and random_start_max_objective_distance < 0
+        ):
+            raise ValueError(
+                "random_start_max_objective_distance must be non-negative"
+            )
+        if (
+            random_start_max_objective_distance is not None
+            and not randomize_player_positions
+        ):
+            raise ValueError(
+                "random_start_max_objective_distance requires randomized "
+                "player positions"
+            )
+        if random_start_candidate_positions and not randomize_player_positions:
+            raise ValueError(
+                "random_start_candidate_positions requires randomized "
+                "player positions"
+            )
         self.mdp = mdp or BurgerGridworld()
         self.num_players = num_players
-        self._state = self.mdp.get_standard_start_state(num_players)
+        self.start_stage = start_stage
+        self.randomize_player_positions = randomize_player_positions
+        self.random_start_max_objective_distance = (
+            random_start_max_objective_distance
+        )
+        self.random_start_candidate_positions = tuple(
+            random_start_candidate_positions
+        )
+        invalid_candidates = set(
+            self.random_start_candidate_positions
+        ) - set(self.mdp.layout.valid_player_positions)
+        if invalid_candidates:
+            raise ValueError(
+                "Random start candidates must be walkable floor cells: "
+                "{}".format(sorted(invalid_candidates))
+            )
+        self._rng = random.Random(0)
+        self._state = self._new_start_state()
 
     @property
     def state(self) -> BurgerState:
         return copy.deepcopy(self._state)
 
-    def reset(self) -> BurgerState:
-        self._state = self.mdp.get_standard_start_state(self.num_players)
+    @property
+    def _state_view(self) -> BurgerState:
+        """Internal read-only state view for the high-throughput adapter."""
+
+        return self._state
+
+    def _new_start_state(self) -> BurgerState:
+        state = self.mdp.get_start_state(
+            self.num_players, stage=self.start_stage
+        )
+        if self.randomize_player_positions:
+            candidate_positions = sorted(
+                self.random_start_candidate_positions
+                or self.mdp.layout.valid_player_positions
+            )
+            target = self._start_objective_target(state)
+            if (
+                target is not None
+                and self.random_start_max_objective_distance is not None
+            ):
+                distance_field = self.mdp._station_distances[target]
+                candidate_positions = [
+                    position
+                    for position in candidate_positions
+                    if distance_field.get(position)
+                    is not None
+                    and distance_field[position]
+                    <= self.random_start_max_objective_distance
+                ]
+            if len(candidate_positions) < self.num_players:
+                raise ValueError(
+                    "Distance-limited randomized start has fewer legal "
+                    "positions than players"
+                )
+            positions = self._rng.sample(
+                candidate_positions,
+                self.num_players,
+            )
+            for player, position in zip(state.players, positions):
+                player.position = position
+            self.mdp.validate_state(state)
+        return state
+
+    @staticmethod
+    def _start_objective_target(state: BurgerState) -> Optional[str]:
+        """Return the recovery station for hard-start distance curricula."""
+
+        held_items = {
+            player.held_object
+            for player in state.players
+            if player.held_object is not None
+        }
+        if state.grill.food == "burnt_beef":
+            if "extinguisher" in held_items:
+                return GRILL
+            if any(
+                player.held_object is None for player in state.players
+            ):
+                return EXTINGUISHER
+            return None
+        if "dirty_plate" in held_items:
+            return SINK
+        if state.clean_plates == 0 and state.sink.has_dirty_plate:
+            return SINK
+        if (
+            state.clean_plates == 0
+            and (
+                state.dirty_plates_at_return > 0
+                or state.pending_plate_returns
+            )
+        ):
+            return RETURN
+        return None
+
+    def reset(self, seed: Optional[int] = None) -> BurgerState:
+        if seed is not None:
+            if not isinstance(seed, int):
+                raise ValueError("seed must be an integer")
+            self._rng.seed(seed)
+        self._state = self._new_start_state()
         return self.state
 
     def step(self, joint_action: Sequence[object]) -> BurgerTransition:
-        transition = self.mdp.get_state_transition(self._state, joint_action)
-        self._state = transition.state
+        transition = self._step_internal(joint_action)
         return BurgerTransition(
             state=copy.deepcopy(transition.state),
             reward=transition.reward,
             done=transition.done,
             info=copy.deepcopy(transition.info),
         )
+
+    def _step_internal(
+        self, joint_action: Sequence[object]
+    ) -> BurgerTransition:
+        """Advance state without redundant defensive output copies.
+
+        This is reserved for the MAPPO adapter, which immediately encodes the
+        result and never exposes the mutable state object to a policy.
+        """
+
+        transition = self.mdp.get_state_transition(self._state, joint_action)
+        self._state = transition.state
+        return transition
 
 
 __all__ = [
@@ -1214,6 +1946,7 @@ __all__ = [
     "BurgerState",
     "BurgerTransition",
     "CRAMPED_GALLEY",
+    "CURRICULUM_START_STAGES",
     "RETURN",
     "TRASH",
 ]

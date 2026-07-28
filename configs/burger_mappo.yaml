@@ -34,7 +34,8 @@ environment:
     world_aligned: true
     occlusion: true
     communication_channel: false
-    shape: [26, 9, 9]
+    shape: [29, 9, 9]
+    self_pose_channels: [normalized_x, normalized_y]
     includes_reward: false
     includes_hidden_global_state: false
   timers_steps:
@@ -82,7 +83,7 @@ reward:
   correct_delivery: 20.0
   fire_started: -5.0
   blocked_or_collision: -0.05
-  time_step: -0.01
+  time_step: 0.0
   potential_based_shaping:
     formula: gamma_phi_next_minus_phi
     gamma_must_equal_optimization_gamma: true
