@@ -90,7 +90,7 @@ GLOBAL_CHANNELS = {
     "time_remaining": GLOBAL_ITEM_OFFSET + 10,
 }
 NUM_GLOBAL_CHANNELS = GLOBAL_ITEM_OFFSET + 11
-NUM_GLOBAL_SCALARS = MAX_AGENTS * 3
+NUM_GLOBAL_SCALARS = MAX_AGENTS * 2
 ORIENTATION_TO_INDEX = {
     (0, -1): 0,
     (0, 1): 1,
@@ -410,9 +410,6 @@ class BurgerMAPPOEnv:
         )
         active = np.zeros(MAX_AGENTS, dtype=np.float32)
         active[: self.num_players] = 1.0
-        washing_player = np.zeros(MAX_AGENTS, dtype=np.float32)
-        if state.sink.washing_player is not None:
-            washing_player[state.sink.washing_player] = 1.0
         pending_returns = np.zeros(MAX_AGENTS, dtype=np.float32)
         for index, due in enumerate(sorted(state.pending_plate_returns)):
             pending_returns[index] = min(
@@ -424,7 +421,6 @@ class BurgerMAPPOEnv:
             (
                 encoded.reshape(-1),
                 active,
-                washing_player,
                 pending_returns,
             )
         )

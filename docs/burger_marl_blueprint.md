@@ -40,9 +40,10 @@ The following invariants are checked after every training step:
   ingredient occupies one visible hand or counter position, while every
   partial burger is one plate object in a visible hand or counter position;
 - grill, sink, and plate-return timer bounds;
-- one sink owner and at most one wash tick per joint environment step;
-- a washed plate enters the washing agent's empty hand, and only a later
-  `PICK_DROP` at the plate rack adds it back to the visible stack;
+- at most one wash tick per joint environment step; any adjacent empty-handed
+  agent may continue an interrupted wash without a hidden owner reservation;
+- a washed plate enters the final processing agent's empty hand, and only a
+  later `PICK_DROP` at the plate rack adds it back to the visible stack;
 - exactly one extinguisher across its station, agent hands, and counters;
 - completed food can be rewarded only once because delivery consumes the held
   plated burger in the same transaction;
@@ -139,8 +140,8 @@ extension rather than being approximated inside this action space.
 ### Centralized critic input
 
 The critic uses the full semantic grid, all agent positions and orientations,
-inventories, station timers, fire state, sink owner, pending plate-return
-timers, and active-agent mask during training only. These fields distinguish
+inventories, station timers, fire state, pending plate-return timers, and
+active-agent mask during training only. These fields distinguish
 states that can have different next-state distributions, so the critic input
 is Markov for the implemented dynamics.
 

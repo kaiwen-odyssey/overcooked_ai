@@ -450,12 +450,28 @@ def audit_training_contract(config: TrainConfig) -> Dict[str, object]:
     sink_state.sink = SinkState(
         has_dirty_plate=True,
         wash_progress=0,
-        washing_player=0,
     )
     washed = mdp.get_state_transition(sink_state, [Action.PROCESS])
     assert_reward(washed)
     if washed.state.sink.wash_progress != 1:
         raise RuntimeError("PROCESS did not advance washing by exactly one tick")
+
+    wash_interrupted = washed.state
+    wash_interrupted.players[0].position = adjacent_floor(
+        station_position(BUN_DISPENSER)
+    )
+    fetched_during_interrupted_wash = mdp.get_state_transition(
+        wash_interrupted, [Action.PICK_DROP]
+    )
+    assert_reward(fetched_during_interrupted_wash)
+    if (
+        fetched_during_interrupted_wash.state.players[0].held_object
+        != "bun"
+        or fetched_during_interrupted_wash.state.sink.wash_progress != 1
+    ):
+        raise RuntimeError(
+            "Interrupted wash incorrectly reserved or froze an agent"
+        )
 
     fire_state = mdp.get_standard_start_state(1)
     fire_state.players[0] = BurgerPlayerState(
@@ -588,6 +604,8 @@ def audit_training_contract(config: TrainConfig) -> Dict[str, object]:
         "unrelated_agents_continue_after_local_collision": True,
         "invalid_interactions_have_no_positive_reward": True,
         "potential_gamma_matches_ppo_gamma": True,
+        "wash_progress_does_not_reserve_agent": True,
+        "sink_process_mask_has_no_hidden_owner": True,
     }
 
 

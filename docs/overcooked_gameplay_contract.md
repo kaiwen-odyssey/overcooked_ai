@@ -86,7 +86,7 @@ and collision model and must not be silently represented as ordinary movement.
 - actor observation: a 26-channel, 9 by 9 world-aligned semantic crop, including
   distinct trash, delivery, and dish-return terrain channels;
 - critic observation: a separate Markov global state, including orientations,
-  pending plate-return timers, sink owner, and active-agent mask;
+  pending plate-return timers and active-agent mask;
 - action: one integer in the standalone seven-action set;
 - action mask: `STAY`, walkable cardinal moves, and only those `PICK_DROP` or
   `PROCESS` actions for which a locally visible adjacent station can produce a

@@ -184,7 +184,6 @@ class GrillState:
 class SinkState:
     has_dirty_plate: bool = False
     wash_progress: int = 0
-    washing_player: Optional[int] = None
 
 
 @dataclass
@@ -580,7 +579,6 @@ class BurgerGridworld:
             if terrain == SINK:
                 return (
                     state.sink.has_dirty_plate
-                    and state.sink.washing_player == player_idx
                     and player.held_object is None
                 )
             if terrain == GRILL:
@@ -778,7 +776,6 @@ class BurgerGridworld:
             player.held_object = None
             sink.has_dirty_plate = True
             sink.wash_progress = 0
-            sink.washing_player = player_idx
             events.append({"type": "wash_started", "agent": player_idx})
 
     def _process_sink(
@@ -788,7 +785,10 @@ class BurgerGridworld:
         events: List[Dict[str, object]],
     ) -> None:
         sink = state.sink
-        if not sink.has_dirty_plate or sink.washing_player != player_idx:
+        player = state.players[player_idx]
+        if not sink.has_dirty_plate or player.held_object is not None:
+            return
+        if any(event["type"] == "wash_progress" for event in events):
             return
 
         # One joint step can add at most one wash tick, regardless of the
@@ -802,14 +802,8 @@ class BurgerGridworld:
             }
         )
         if sink.wash_progress == self.config.wash_steps:
-            player = state.players[player_idx]
-            if player.held_object is not None:
-                raise ValueError(
-                    "Washing player must have an empty hand at completion"
-                )
             sink.has_dirty_plate = False
             sink.wash_progress = 0
-            sink.washing_player = None
             player.held_object = "clean_plate"
             events.append({"type": "plate_washed", "agent": player_idx})
 
@@ -1088,19 +1082,12 @@ class BurgerGridworld:
         if state.grill.ready_ticks > self.config.burn_steps:
             raise ValueError("Grill burn timer exceeded configured duration")
 
-        if not state.sink.has_dirty_plate and (
-            state.sink.wash_progress != 0
-            or state.sink.washing_player is not None
+        if (
+            not state.sink.has_dirty_plate
+            and state.sink.wash_progress != 0
         ):
             raise ValueError("Empty sink cannot retain washing state")
         if state.sink.has_dirty_plate:
-            if state.sink.washing_player not in range(len(state.players)):
-                raise ValueError("Sink has no valid washing player")
-            if (
-                state.players[state.sink.washing_player].held_object
-                is not None
-            ):
-                raise ValueError("Washing player must have an empty hand")
             if state.sink.wash_progress >= self.config.wash_steps:
                 raise ValueError("Completed wash must immediately return a clean plate")
 

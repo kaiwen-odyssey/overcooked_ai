@@ -912,13 +912,53 @@ class TestBurgerGridworldContract(unittest.TestCase):
             sink=SinkState(
                 has_dirty_plate=True,
                 wash_progress=0,
-                washing_player=0,
             ),
         )
         next_state = mdp.get_state_transition(
             state, [Action.PROCESS, Action.PROCESS]
         ).state
         self.assertEqual(next_state.sink.wash_progress, 1)
+
+        handed_off = mdp.get_state_transition(
+            next_state, [Action.STAY, Action.PROCESS]
+        ).state
+        self.assertEqual(handed_off.sink.wash_progress, 2)
+
+        completed = mdp.get_state_transition(
+            handed_off, [Action.STAY, Action.PROCESS]
+        ).state
+        self.assertFalse(completed.sink.has_dirty_plate)
+        self.assertIsNone(completed.players[0].held_object)
+        self.assertEqual(
+            completed.players[1].held_object, "clean_plate"
+        )
+
+    def test_in_progress_wash_does_not_reserve_or_crash_an_agent(self):
+        mdp = BurgerGridworld()
+        state = BurgerState(
+            players=[
+                BurgerPlayerState((0, 1), Direction.NORTH),
+            ],
+            clean_plates=3,
+            total_plates=4,
+            sink=SinkState(
+                has_dirty_plate=True,
+                wash_progress=1,
+            ),
+        )
+
+        self.assertTrue(
+            mdp.context_action_available(
+                state, 0, Action.PICK_DROP
+            )
+        )
+        fetched = mdp.get_state_transition(
+            state, [Action.PICK_DROP]
+        ).state
+
+        self.assertEqual(fetched.players[0].held_object, "bun")
+        self.assertTrue(fetched.sink.has_dirty_plate)
+        self.assertEqual(fetched.sink.wash_progress, 1)
 
     def test_grill_uses_environment_clock_and_fire_rewards_once(self):
         config = BurgerConfig(total_plates=1, cook_steps=3, burn_steps=2)

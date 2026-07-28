@@ -12,7 +12,15 @@ from burger_marl.mappo_env import (
     NUM_LOCAL_CHANNELS,
     TERRAIN_CHANNEL,
 )
-from burger_marl.env import COUNTER, RETURN, SERVE, TRASH
+from burger_marl.env import (
+    COUNTER,
+    RETURN,
+    SERVE,
+    TRASH,
+    BurgerPlayerState,
+    BurgerState,
+    SinkState,
+)
 
 
 class TestBurgerMAPPOContract(unittest.TestCase):
@@ -96,6 +104,38 @@ class TestBurgerMAPPOContract(unittest.TestCase):
         self.assertEqual(next_available[0, pick_drop], 0.0)
         self.assertEqual(next_available[0, process], 0.0)
         self.assertEqual(next_available[0].sum(), 3.0)
+
+    def test_sink_process_mask_has_no_hidden_owner_identity(self):
+        env = BurgerMAPPOEnv(num_players=2)
+        state = BurgerState(
+            players=[
+                BurgerPlayerState((0, 6), Direction.SOUTH),
+                BurgerPlayerState((7, 1), Direction.NORTH),
+            ],
+            clean_plates=3,
+            total_plates=4,
+            sink=SinkState(
+                has_dirty_plate=True,
+                wash_progress=1,
+            ),
+        )
+        hidden_change = copy.deepcopy(state)
+        hidden_change.players[1].orientation = Direction.SOUTH
+        process = Action.ACTION_TO_INDEX[Action.PROCESS]
+
+        env._env._state = copy.deepcopy(state)
+        observation_before = env.local_observations()[0]
+        mask_before = env.available_actions()[0]
+        env._env._state = hidden_change
+        observation_after = env.local_observations()[0]
+        mask_after = env.available_actions()[0]
+
+        self.assertFalse(hasattr(state.sink, "washing_player"))
+        np.testing.assert_array_equal(
+            observation_before, observation_after
+        )
+        np.testing.assert_array_equal(mask_before, mask_after)
+        self.assertEqual(mask_before[process], 1.0)
 
     def test_inactive_slots_can_only_submit_stay(self):
         env = BurgerMAPPOEnv(num_players=2)

@@ -214,6 +214,8 @@ class TestBurgerPPOTrainer(unittest.TestCase):
             report["invalid_interactions_have_no_positive_reward"]
         )
         self.assertTrue(report["potential_gamma_matches_ppo_gamma"])
+        self.assertTrue(report["wash_progress_does_not_reserve_agent"])
+        self.assertTrue(report["sink_process_mask_has_no_hidden_owner"])
         self.assertTrue(
             report["unrelated_agents_continue_after_local_collision"]
         )
