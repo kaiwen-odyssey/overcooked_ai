@@ -34,6 +34,9 @@ harl = [
     "wandb",
     "gym",
 ]
+burger_train = [
+    "torch>=2.7.0",
+]
 
 [project.scripts]
 overcooked-demo-up = "overcooked_demo:start_server"

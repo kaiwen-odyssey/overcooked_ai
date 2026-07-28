@@ -64,7 +64,10 @@ setup(
             "ray[rllib]>=2.5.0",
             "protobuf",
             "tensorflow>=2.14.0",
-        ]
+        ],
+        "burger_train": [
+            "torch>=2.7.0",
+        ],
     },
     entry_points={
         "console_scripts": [

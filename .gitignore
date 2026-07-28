@@ -160,10 +160,20 @@ data/pbt_exp/
 data/gail_runs/
 data/joint_ppo_runs/
 data/ppo_exp/
+/runs/
+src/human_aware_rl/imitation/bc_runs/
+src/human_aware_rl/ppo/reproduced_results/
+src/human_aware_rl/ppo/wandb/
 
 #demo gitignore
 *~
 package-lock.json
+
+# NEXUS BP simulator assets and reproducible frontend build
+!burger_lab/public/og.png
+!burger_lab/package-lock.json
+!burger_lab/build/
+!burger_lab/build/**
 node_modules/
 **/.DS_Store
 **/.vscode/

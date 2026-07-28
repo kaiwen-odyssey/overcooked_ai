@@ -1,0 +1,141 @@
+experiment:
+  name: burger_mappo_ctde
+  seed: 20260728
+  episode_seconds: 180
+  layouts:
+    - cramped_galley
+    - split_service
+    - coordination_ring
+  agent_count_curriculum: [1, 2, 3, 4]
+
+environment:
+  action_space: [north, south, east, west, stay, pick_drop, process]
+  action_contract: standalone_v2_adjacent_pick_drop_process
+  action_mask: local_visible_adjacent_context_v2
+  world_object_contract: visible_counter_or_plate_v1
+  dynamics_core: burger_marl.env.BurgerEnv
+  trainer_adapter: burger_marl.mappo_env.BurgerMAPPOEnv
+  renderer_can_mutate_state: false
+  fixed_agent_slots: 4
+  active_agent_mask: true
+  step_seconds: 0.42
+  horizon_steps: 429
+  transition_order:
+    - validate_joint_action
+    - resolve_interacts_by_agent_index
+    - resolve_joint_movement_and_collisions
+    - advance_environment_timers_once
+    - validate_state_invariants
+    - derive_reward_from_events
+  strict_agent_obstacles: false
+  state_digest: sha256
+  local_observation:
+    radius: 4
+    world_aligned: true
+    occlusion: true
+    communication_channel: false
+    shape: [26, 9, 9]
+    includes_reward: false
+    includes_hidden_global_state: false
+  timers_steps:
+    cook_ready: 24
+    burn_after_ready: 16
+    wash_each_plate: 10
+    dirty_plate_return: 12
+  domain_randomization:
+    probability: 0.20
+    cook_time_scale: [0.80, 1.25]
+    wash_time_scale: [0.80, 1.25]
+    sensor_dropout: [0.00, 0.10]
+    order_jitter_seconds: [0, 4]
+
+policy:
+  algorithm: MAPPO
+  parameter_sharing: true
+  actor:
+    encoder: cnn
+    recurrent: false
+    hidden_size: 256
+    agent_id_embedding: true
+  critic:
+    centralized: true
+    hidden_size: 256
+    agent_mask: true
+
+optimization:
+  optimizer: adam
+  learning_rate: 3.0e-4
+  final_learning_rate: 3.0e-5
+  gamma: 0.99
+  gae_lambda: 0.95
+  ppo_clip: 0.20
+  value_clip: 0.20
+  entropy_coefficient: [0.01, 0.001]
+  max_grad_norm: 10.0
+  rollout_length: 256
+  parallel_environments: 64
+  ppo_epochs: 4
+  mini_batches: 8
+
+reward:
+  source: validated_environment_events_only
+  correct_delivery: 20.0
+  fire_started: -5.0
+  blocked_or_collision: -0.05
+  time_step: -0.01
+  potential_based_shaping:
+    formula: gamma_phi_next_minus_phi
+    gamma_must_equal_optimization_gamma: true
+    terminal_potential: 0.0
+  invalid_or_repeated_interaction: 0.0
+  trash_disposal_event: 0.0
+
+training_safety:
+  preflight_required: true
+  check_all_seven_action_effects: true
+  check_reward_breakdown_sum: true
+  refresh_action_mask_after_every_step: true
+  reject_non_binary_or_empty_active_masks: true
+  max_all_agents_stay_ratio: 0.98
+  max_all_agents_noop_ratio: 0.995
+  action_freeze_patience_updates: 3
+
+failure_replay:
+  trajectory_seconds_before: 10
+  trajectory_seconds_after: 15
+  variants_per_cluster: 64
+  prioritized_batch_fraction: 0.30
+  triggers:
+    - fire
+    - deadlock_5s
+    - wrong_delivery
+    - dropped_handoff
+    - latency_above_train_p95
+    - high_value_error
+
+evaluation:
+  seeds: 5
+  episodes_per_layout_agent_count_seed: 100
+  deterministic_actor: true
+  confidence_interval: bootstrap_95
+  primary_metric: correct_deliveries_per_180s
+  metrics:
+    - deliveries_per_minute
+    - completion_rate
+    - mean_order_latency
+    - p90_order_latency
+    - collisions_per_100_steps
+    - idle_time_ratio
+    - station_utilization
+    - handoff_success_rate
+    - workload_gini
+    - role_specialization_nmi
+    - fire_recovery_rate
+    - p90_fire_recovery_time
+    - deadlock_rate
+    - cross_play_score
+    - action_fraction_per_action
+    - all_agents_stay_ratio
+    - all_agents_noop_ratio
+    - mean_legal_actions
+    - reward_component_totals

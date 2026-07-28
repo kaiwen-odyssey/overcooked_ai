@@ -1,0 +1,60 @@
+experiment:
+  name: cramped_galley_mappo_2agent
+  layout: cramped_galley
+  seed: 20260728
+  stage: 2
+  actor_initialization: stage_1_ppo_actor
+  critic_initialization: fresh
+
+environment:
+  active_agents: 2
+  action_space: [north, south, east, west, stay, pick_drop, process]
+  action_contract: standalone_v2_adjacent_pick_drop_process
+  action_mask: local_visible_adjacent_context_v2
+  world_object_contract: visible_counter_or_plate_v1
+  horizon_steps: 429
+  episode_seconds: 180
+  cook_steps: 24
+  ready_pickup_window_steps: 16
+  wash_steps: 10
+  plate_return_steps: 12
+  actor_observation: local_world_aligned_26x9x9
+  critic_observation: authoritative_global_state
+
+training:
+  algorithm: MAPPO
+  ctde: true
+  parameter_shared_actor: true
+  total_env_steps: 9000000
+  parallel_environments: 64
+  rollout_length: 256
+  update_epochs: 4
+  mini_batches: 8
+  learning_rate: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  ppo_clip: 0.20
+  entropy_coefficient: 0.01
+  max_grad_norm: 10.0
+  preflight_required: true
+  max_all_agents_stay_ratio: 0.98
+  max_all_agents_noop_ratio: 0.995
+  action_freeze_patience_updates: 3
+
+reward:
+  source: validated_environment_events_only
+  correct_delivery: 20.0
+  fire_started: -5.0
+  blocked_or_collision: -0.05
+  time_step: -0.01
+  potential_scale: 1.0
+  potential_gamma_must_equal_training_gamma: true
+  invalid_or_repeated_interaction: 0.0
+
+acceptance_gate:
+  preflight_status: passed
+  deterministic_fixed_start_episodes: 20
+  minimum_mean_deliveries_per_180s: 1.0
+  max_eval_all_agents_stay_ratio: 0.95
+  max_eval_all_agents_noop_ratio: 0.98
+  must_exceed_stage_1_deliveries_per_minute: true
