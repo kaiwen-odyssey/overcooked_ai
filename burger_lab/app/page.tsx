@@ -1895,9 +1895,12 @@ export default function Home() {
   const washingActive =
     washingAgent.workKind === "washing" &&
     washingAgent.workTicksRemaining > 0;
+  const washingCompletedSteps = washingActive
+    ? washingAgent.workTotalTicks - washingAgent.workTicksRemaining
+    : 0;
   const washingProgress = washingActive
     ? Math.round(
-        ((washingAgent.workTotalTicks - washingAgent.workTicksRemaining) /
+        (washingCompletedSteps /
           washingAgent.workTotalTicks) *
           100,
       )
@@ -2773,11 +2776,27 @@ export default function Home() {
                           className="wash-status"
                           aria-label={`洗盘进度 ${washingProgress}% · 剩余 ${washingSecondsRemaining.toFixed(1)} 秒`}
                         >
-                          <small>WASHING 1 / 1</small>
-                          <b>{washingSecondsRemaining.toFixed(1)}s</b>
-                          <i>
+                          <span className="wash-status-heading">
+                            <small>WASHING</small>
+                            <b>{washingProgress}%</b>
+                          </span>
+                          <i
+                            className="wash-progress"
+                            role="progressbar"
+                            aria-label="Dish washing progress"
+                            aria-valuemin={0}
+                            aria-valuemax={WASH_DURATION_STEPS}
+                            aria-valuenow={washingCompletedSteps}
+                          >
                             <em style={{ width: `${washingProgress}%` }} />
                           </i>
+                          <span className="wash-status-meta">
+                            <small>
+                              STEP {washingCompletedSteps} /{" "}
+                              {WASH_DURATION_STEPS}
+                            </small>
+                            <b>{washingSecondsRemaining.toFixed(1)}s</b>
+                          </span>
                         </span>
                       </>
                     )}

@@ -315,7 +315,13 @@ test("shows explicit dirty-dish occupancy inside the sink", async () => {
     /洗碗池内有 \$\{sinkDirtyPlateCount\} 个脏盘，一次清洗 1 个/,
   );
   assert.match(pageSource, /<small>DIRTY<\/small>/);
-  assert.match(pageSource, /<small>WASHING 1 \/ 1<\/small>/);
+  assert.match(pageSource, /className="wash-progress"/);
+  assert.match(pageSource, /role="progressbar"/);
+  assert.match(pageSource, /aria-valuenow=\{washingCompletedSteps\}/);
+  assert.match(
+    pageSource,
+    /STEP \{washingCompletedSteps\} \/{" "}/,
+  );
   assert.match(
     pageSource,
     /Sink capacity violated: exactly one dirty plate at a time/,
