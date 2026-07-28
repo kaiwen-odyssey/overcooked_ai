@@ -1,0 +1,40 @@
+experiment:
+  name: cramped_galley_ppo_1agent
+  layout: cramped_galley
+  seed: 20260728
+  stage: 1
+  initialization: random
+
+environment:
+  active_agents: 1
+  action_space: [north, south, east, west, stay, pick_drop, process]
+  action_contract: standalone_v2_adjacent_pick_drop_process
+  action_mask: local_visible_adjacent_context_v2
+  world_object_contract: visible_counter_or_plate_v1
+  horizon_steps: 429
+  episode_seconds: 180
+  cook_steps: 24
+  ready_pickup_window_steps: 16
+  plate_return_steps: 12
+  fire_started_penalty: -5.0
+  actor_observation: local_world_aligned_26x9x9
+  critic_observation: authoritative_global_state
+
+training:
+  algorithm: PPO
+  total_env_steps: 3000000
+  parallel_environments: 64
+  rollout_length: 256
+  update_epochs: 4
+  mini_batches: 8
+  learning_rate: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  ppo_clip: 0.20
+  entropy_coefficient: 0.01
+  max_grad_norm: 10.0
+
+acceptance_gate:
+  deterministic_fixed_start_episodes: 20
+  minimum_mean_deliveries_per_180s: 1.0
+  compare_against: random_policy
