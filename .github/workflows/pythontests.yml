@@ -1,11 +1,19 @@
-on: ['push', 'pull_request']
+name: Python tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
 jobs:
   ubuntu_mdp_tests:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
     - name: Set up Python 3.10.16
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: 3.10.16
         architecture: 'x64'
@@ -17,6 +25,7 @@ jobs:
         uv venv
         source .venv/bin/activate
         uv pip install coverage
+        uv pip install torch==2.7.1 --index https://download.pytorch.org/whl/cpu
     - name: Setup # needs -e flag for coverage tests to work
       run: |
         source .venv/bin/activate
@@ -25,8 +34,11 @@ jobs:
       run: |
         source .venv/bin/activate
         coverage run -m unittest discover -s testing/ -p "*_test.py"
+        coverage xml -o coverage.xml
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v1
+      uses: codecov/codecov-action@v7
       with:
         name: codecov-report
+        files: coverage.xml
+        disable_search: true
         fail_ci_if_error: false

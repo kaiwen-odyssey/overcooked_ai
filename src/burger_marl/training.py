@@ -10,6 +10,7 @@ value function receives the separate global state exposed by
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import math
@@ -29,21 +30,26 @@ from torch.distributions import Categorical
 from burger_marl.actions import Action, Direction
 from burger_marl.mappo_env import (
     BurgerMAPPOEnv,
+    LOCAL_CHANNELS,
     MAX_AGENTS,
+    TERRAIN_CHANNEL,
 )
 from burger_marl.env import (
     BEEF_DISPENSER,
     BUN_DISPENSER,
+    EXTINGUISHER,
     FLOOR,
     GRILL,
     LETTUCE_DISPENSER,
     PLATE_RACK,
+    Point,
     SERVE,
     SINK,
     BurgerConfig,
     BurgerGridworld,
     BurgerPlayerState,
     BurgerRewardConfig,
+    CURRICULUM_START_STAGES,
     GrillState,
     SinkState,
 )
@@ -65,11 +71,13 @@ class TrainConfig:
     update_epochs: int = 4
     num_minibatches: int = 8
     learning_rate: float = 3e-4
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
+    gamma: float = 0.999
+    gae_lambda: float = 0.98
     clip_coef: float = 0.2
     value_coef: float = 0.5
     entropy_coef: float = 0.01
+    actor_anchor_kl_coef: float = 0.0
+    rollout_temperature: float = 1.0
     max_grad_norm: float = 10.0
     hidden_size: int = 256
     horizon: int = 429
@@ -78,10 +86,20 @@ class TrainConfig:
     wash_steps: int = 10
     plate_return_steps: int = 12
     correct_delivery_reward: float = 20.0
+    raw_beef_placed_reward: float = 0.0
+    dirty_plate_pickup_reward: float = 0.0
+    wash_started_reward: float = 0.0
+    wash_progress_reward: float = 0.0
+    plate_washed_reward: float = 0.0
+    fire_extinguished_reward: float = 0.0
     fire_started_penalty: float = -5.0
+    fire_active_penalty: float = -0.25
+    fire_food_handling_penalty: float = -2.0
+    dirty_plate_counter_handling_penalty: float = -0.25
     collision_penalty: float = -0.05
-    time_step_penalty: float = -0.01
+    time_step_penalty: float = 0.0
     potential_scale: float = 1.0
+    navigation_potential_scale: float = 1.0
     max_all_agents_stay_ratio: float = 0.98
     max_all_agents_noop_ratio: float = 0.995
     action_freeze_patience_updates: int = 3
@@ -92,6 +110,21 @@ class TrainConfig:
     output_dir: str = "runs/burger"
     actor_init: Optional[str] = None
     deterministic_torch: bool = False
+    training_start_stage: str = "standard"
+    training_start_mix_stage: Optional[str] = None
+    randomize_start_positions: bool = False
+    random_start_max_objective_distance: Optional[int] = None
+    random_start_candidate_positions: Tuple[Tuple[int, int], ...] = ()
+    training_episode_steps: Optional[int] = None
+    allow_mixed_curriculum_event_rewards: bool = False
+    freeze_base_actor_for_emergency: bool = False
+    freeze_cleanup_actor_for_fire: bool = False
+    freeze_emergency_actor_for_suppression: bool = False
+    freeze_suppression_actor_for_emergency: bool = False
+    freeze_base_actor_for_dish: bool = False
+    freeze_fire_actors_for_dish: bool = False
+    freeze_dish_actor_for_assembly: bool = False
+    freeze_assembly_actor_for_workflow: bool = False
     bc_pretrain_steps: int = 0
     bc_batch_size: int = 128
     bc_learning_rate: float = 1e-3
@@ -106,6 +139,77 @@ class TrainConfig:
             raise ValueError("Unsupported burger action-mask contract")
         if self.world_object_contract != "visible_counter_or_plate_v1":
             raise ValueError("Unsupported burger world-object contract")
+        if self.training_start_stage not in CURRICULUM_START_STAGES:
+            raise ValueError("Unsupported training_start_stage")
+        if (
+            self.training_start_mix_stage is not None
+            and self.training_start_mix_stage
+            not in CURRICULUM_START_STAGES
+        ):
+            raise ValueError("Unsupported training_start_mix_stage")
+        if (
+            (
+                self.training_start_stage != "standard"
+                or self.training_start_mix_stage is not None
+            )
+            and self.num_agents != 1
+        ):
+            raise ValueError(
+                "Curriculum start states support one-agent PPO only"
+            )
+        if (
+            self.random_start_max_objective_distance is not None
+            and self.random_start_max_objective_distance < 0
+        ):
+            raise ValueError(
+                "random_start_max_objective_distance must be non-negative"
+            )
+        if (
+            self.random_start_max_objective_distance is not None
+            and not self.randomize_start_positions
+        ):
+            raise ValueError(
+                "random_start_max_objective_distance requires "
+                "randomize_start_positions"
+            )
+        normalized_candidates = tuple(
+            tuple(position)
+            for position in self.random_start_candidate_positions
+        )
+        object.__setattr__(
+            self,
+            "random_start_candidate_positions",
+            normalized_candidates,
+        )
+        if any(
+            len(position) != 2
+            or any(not isinstance(value, int) for value in position)
+            for position in normalized_candidates
+        ):
+            raise ValueError(
+                "random_start_candidate_positions must contain integer "
+                "(x, y) pairs"
+            )
+        if (
+            normalized_candidates
+            and not self.randomize_start_positions
+        ):
+            raise ValueError(
+                "random_start_candidate_positions requires "
+                "randomize_start_positions"
+            )
+        if (
+            self.training_episode_steps is not None
+            and self.training_episode_steps <= 0
+        ):
+            raise ValueError("training_episode_steps must be positive")
+        if (
+            self.training_episode_steps is not None
+            and self.training_start_stage == "standard"
+        ):
+            raise ValueError(
+                "training_episode_steps is reserved for curriculum starts"
+            )
         if self.algorithm == "ppo" and self.num_agents != 1:
             raise ValueError("PPO mode requires exactly one active agent")
         if self.algorithm == "mappo" and self.num_agents < 2:
@@ -119,6 +223,7 @@ class TrainConfig:
             "update_epochs": self.update_epochs,
             "num_minibatches": self.num_minibatches,
             "learning_rate": self.learning_rate,
+            "rollout_temperature": self.rollout_temperature,
             "max_grad_norm": self.max_grad_norm,
             "hidden_size": self.hidden_size,
             "horizon": self.horizon,
@@ -138,14 +243,139 @@ class TrainConfig:
             raise ValueError("Training values must be positive: {}".format(invalid))
         if self.fire_started_penalty > 0:
             raise ValueError("fire_started_penalty must not be positive")
+        if self.fire_active_penalty > 0:
+            raise ValueError("fire_active_penalty must not be positive")
+        if self.fire_food_handling_penalty > 0:
+            raise ValueError(
+                "fire_food_handling_penalty must not be positive"
+            )
+        if self.dirty_plate_counter_handling_penalty > 0:
+            raise ValueError(
+                "dirty_plate_counter_handling_penalty must not be positive"
+            )
         if self.collision_penalty > 0:
             raise ValueError("collision_penalty must not be positive")
         if self.time_step_penalty > 0:
             raise ValueError("time_step_penalty must not be positive")
         if self.correct_delivery_reward <= 0:
             raise ValueError("correct_delivery_reward must be positive")
+        non_negative_task_rewards = {
+            "raw_beef_placed_reward": self.raw_beef_placed_reward,
+            "dirty_plate_pickup_reward": self.dirty_plate_pickup_reward,
+            "wash_started_reward": self.wash_started_reward,
+            "wash_progress_reward": self.wash_progress_reward,
+            "plate_washed_reward": self.plate_washed_reward,
+            "fire_extinguished_reward": self.fire_extinguished_reward,
+        }
+        if any(value < 0 for value in non_negative_task_rewards.values()):
+            raise ValueError("Task milestone rewards must not be negative")
+        stages = {
+            self.training_start_stage,
+            self.training_start_mix_stage,
+        }
+        positive_milestones = {
+            name
+            for name, value in non_negative_task_rewards.items()
+            if value > 0
+        }
+        mixed_fire_override_is_valid = (
+            self.allow_mixed_curriculum_event_rewards
+            and "standard" in stages
+            and any(
+                stage is not None and stage.startswith("fire_")
+                for stage in stages
+            )
+            and positive_milestones == {"fire_extinguished_reward"}
+        )
+        if (
+            self.allow_mixed_curriculum_event_rewards
+            and not mixed_fire_override_is_valid
+        ):
+            raise ValueError(
+                "Mixed curriculum event rewards only permit a temporary "
+                "fire_extinguished reward in a standard-plus-fire curriculum"
+            )
+        if (
+            self.freeze_base_actor_for_emergency
+            and not any(
+                stage is not None and stage.startswith("fire_")
+                for stage in stages
+            )
+        ):
+            raise ValueError(
+                "freeze_base_actor_for_emergency requires a fire curriculum"
+            )
+        if (
+            self.freeze_cleanup_actor_for_fire
+            and not any(
+                stage is not None and stage.startswith("fire_")
+                for stage in stages
+            )
+        ):
+            raise ValueError(
+                "freeze_cleanup_actor_for_fire requires a fire curriculum"
+            )
+        if (
+            self.freeze_emergency_actor_for_suppression
+            and not any(
+                stage is not None and stage.startswith("fire_")
+                for stage in stages
+            )
+        ):
+            raise ValueError(
+                "freeze_emergency_actor_for_suppression requires a fire "
+                "curriculum"
+            )
+        if (
+            self.freeze_suppression_actor_for_emergency
+            and not any(
+                stage is not None and stage.startswith("fire_")
+                for stage in stages
+            )
+        ):
+            raise ValueError(
+                "freeze_suppression_actor_for_emergency requires a fire "
+                "curriculum"
+            )
+        dish_curriculum = any(
+            stage in {
+                "dirty_plate_carry_ready",
+                "plate_exhausted_ready",
+            }
+            for stage in stages
+        )
+        if self.freeze_base_actor_for_dish and not dish_curriculum:
+            raise ValueError(
+                "freeze_base_actor_for_dish requires a dish curriculum"
+            )
+        if self.freeze_fire_actors_for_dish and not dish_curriculum:
+            raise ValueError(
+                "freeze_fire_actors_for_dish requires a dish curriculum"
+            )
+        if self.freeze_dish_actor_for_assembly and not dish_curriculum:
+            raise ValueError(
+                "freeze_dish_actor_for_assembly requires a dish curriculum"
+            )
+        if self.freeze_assembly_actor_for_workflow and not dish_curriculum:
+            raise ValueError(
+                "freeze_assembly_actor_for_workflow requires a dish curriculum"
+            )
+        if (
+            "standard" in stages
+            and positive_milestones
+            and not mixed_fire_override_is_valid
+        ):
+            raise ValueError(
+                "Standard-start training must use delivery as its only "
+                "positive event reward unless the explicit mixed fire "
+                "curriculum override is enabled"
+            )
         if self.potential_scale < 0:
             raise ValueError("potential_scale must not be negative")
+        if self.navigation_potential_scale < 0:
+            raise ValueError(
+                "navigation_potential_scale must not be negative"
+            )
         if not 0 < self.gamma <= 1:
             raise ValueError("gamma must be in (0, 1]")
         if not 0 <= self.gae_lambda <= 1:
@@ -156,6 +386,12 @@ class TrainConfig:
             raise ValueError("value_coef must not be negative")
         if self.entropy_coef < 0:
             raise ValueError("entropy_coef must not be negative")
+        if self.actor_anchor_kl_coef < 0:
+            raise ValueError("actor_anchor_kl_coef must not be negative")
+        if self.actor_anchor_kl_coef > 0 and not self.actor_init:
+            raise ValueError(
+                "actor_anchor_kl_coef requires an actor_init checkpoint"
+            )
         if not 0 <= self.max_all_agents_stay_ratio <= 1:
             raise ValueError("max_all_agents_stay_ratio must be in [0, 1]")
         if not 0 <= self.max_all_agents_noop_ratio <= 1:
@@ -175,7 +411,7 @@ class TrainConfig:
 
 
 class LocalActor(nn.Module):
-    """Parameter-shared local actor used unchanged during execution."""
+    """Local actor with an isolated, locally gated emergency residual."""
 
     def __init__(
         self,
@@ -201,15 +437,267 @@ class LocalActor(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_size, num_actions),
         )
+        self.emergency_encoder = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        self.emergency_policy = nn.Sequential(
+            nn.Linear(encoded_size + 8, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, num_actions),
+        )
+        self.cleanup_encoder = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        self.cleanup_policy = nn.Sequential(
+            nn.Linear(encoded_size + 8, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, num_actions),
+        )
+        self.suppression_encoder = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        self.suppression_policy = nn.Sequential(
+            nn.Linear(encoded_size + 8, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, num_actions),
+        )
+        self.dish_encoder = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        self.dish_policy = nn.Sequential(
+            nn.Linear(encoded_size + 8, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, num_actions),
+        )
+        self.assembly_encoder = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        self.assembly_policy = nn.Sequential(
+            nn.Linear(encoded_size + 8, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, num_actions),
+        )
+        self.workflow_encoder = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        self.workflow_policy = nn.Sequential(
+            nn.Linear(encoded_size + 8, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, num_actions),
+        )
         self.apply(_orthogonal_init)
         nn.init.orthogonal_(self.policy[-1].weight, gain=0.01)
+        nn.init.zeros_(self.emergency_policy[-1].weight)
+        nn.init.zeros_(self.emergency_policy[-1].bias)
+        nn.init.zeros_(self.cleanup_policy[-1].weight)
+        nn.init.zeros_(self.cleanup_policy[-1].bias)
+        nn.init.zeros_(self.suppression_policy[-1].weight)
+        nn.init.zeros_(self.suppression_policy[-1].bias)
+        nn.init.zeros_(self.dish_policy[-1].weight)
+        nn.init.zeros_(self.dish_policy[-1].bias)
+        nn.init.zeros_(self.assembly_policy[-1].weight)
+        nn.init.zeros_(self.assembly_policy[-1].bias)
+        nn.init.zeros_(self.workflow_policy[-1].weight)
+        nn.init.zeros_(self.workflow_policy[-1].bias)
 
     def forward(
         self, observations: torch.Tensor, agent_ids: torch.Tensor
     ) -> torch.Tensor:
         features = self.encoder(observations)
         identity = self.agent_embedding(agent_ids)
-        return self.policy(torch.cat((features, identity), dim=-1))
+        base_logits = self.policy(torch.cat((features, identity), dim=-1))
+        emergency_features = self.emergency_encoder(observations)
+        emergency_logits = self.emergency_policy(
+            torch.cat((emergency_features, identity), dim=-1)
+        )
+        cleanup_features = self.cleanup_encoder(observations)
+        cleanup_logits = self.cleanup_policy(
+            torch.cat((cleanup_features, identity), dim=-1)
+        )
+        suppression_features = self.suppression_encoder(observations)
+        suppression_logits = self.suppression_policy(
+            torch.cat((suppression_features, identity), dim=-1)
+        )
+        dish_features = self.dish_encoder(observations)
+        dish_logits = self.dish_policy(
+            torch.cat((dish_features, identity), dim=-1)
+        )
+        assembly_features = self.assembly_encoder(observations)
+        assembly_logits = self.assembly_policy(
+            torch.cat((assembly_features, identity), dim=-1)
+        )
+        workflow_features = self.workflow_encoder(observations)
+        workflow_logits = self.workflow_policy(
+            torch.cat((workflow_features, identity), dim=-1)
+        )
+        fire_alarm = observations[
+            :, LOCAL_CHANNELS["fire_alarm"]
+        ].amax(dim=(1, 2))
+        extinguisher = observations[:, LOCAL_CHANNELS["extinguisher"]]
+        extinguisher_station = observations[
+            :, TERRAIN_CHANNEL[EXTINGUISHER]
+        ]
+        held_or_misplaced_extinguisher = (
+            extinguisher * (1.0 - extinguisher_station)
+        ).amax(dim=(1, 2))
+        suppression_gate = (
+            fire_alarm * held_or_misplaced_extinguisher
+        ).clamp(0.0, 1.0)
+        fire_gate = (
+            fire_alarm * (1.0 - held_or_misplaced_extinguisher)
+        ).clamp(0.0, 1.0)
+        cleanup_gate = (
+            (1.0 - fire_alarm) * held_or_misplaced_extinguisher
+        ).clamp(0.0, 1.0)
+        plate_shortage = observations[
+            :, LOCAL_CHANNELS["plate_shortage"]
+        ].amax(dim=(1, 2))
+        dirty_plate_map = observations[
+            :, LOCAL_CHANNELS["dirty_plate"]
+        ]
+        center_y = observations.shape[-2] // 2
+        center_x = observations.shape[-1] // 2
+        held_dirty_plate = dirty_plate_map[:, center_y, center_x]
+        dirty_plate_in_sink = (
+            dirty_plate_map * observations[:, TERRAIN_CHANNEL[SINK]]
+        ).amax(dim=(1, 2))
+        active_dirty_plate = torch.maximum(
+            held_dirty_plate, dirty_plate_in_sink
+        )
+        dish_gate = (
+            plate_shortage
+            * active_dirty_plate
+            * (1.0 - fire_alarm)
+            * (1.0 - held_or_misplaced_extinguisher)
+        ).clamp(0.0, 1.0)
+        usable_plate_visible = observations[
+            :, LOCAL_CHANNELS["plate"]
+        ].amax(dim=(1, 2))
+        assembly_gate = (
+            plate_shortage
+            * (1.0 - active_dirty_plate)
+            * usable_plate_visible
+            * (1.0 - fire_alarm)
+            * (1.0 - held_or_misplaced_extinguisher)
+        ).clamp(0.0, 1.0)
+        held_plate = observations[
+            :, LOCAL_CHANNELS["plate"], center_y, center_x
+        ]
+        held_bun = observations[
+            :, LOCAL_CHANNELS["bun"], center_y, center_x
+        ]
+        held_lettuce = observations[
+            :, LOCAL_CHANNELS["lettuce"], center_y, center_x
+        ]
+        held_cooked_beef = observations[
+            :, LOCAL_CHANNELS["cooked_beef"], center_y, center_x
+        ]
+        held_bun_lettuce_plate = (
+            held_plate
+            * held_bun
+            * held_lettuce
+            * (1.0 - held_cooked_beef)
+        )
+        workflow_gate = (
+            plate_shortage
+            * held_bun_lettuce_plate
+            * (1.0 - fire_alarm)
+            * (1.0 - held_or_misplaced_extinguisher)
+        ).clamp(0.0, 1.0)
+        return (
+            base_logits
+            + fire_gate.unsqueeze(-1) * emergency_logits
+            + suppression_gate.unsqueeze(-1) * suppression_logits
+            + cleanup_gate.unsqueeze(-1) * cleanup_logits
+            + dish_gate.unsqueeze(-1) * dish_logits
+            + assembly_gate.unsqueeze(-1) * assembly_logits
+            + workflow_gate.unsqueeze(-1) * workflow_logits
+        )
+
+
+def load_actor_state_dict_compatible(
+    actor: LocalActor,
+    state_dict: Dict[str, torch.Tensor],
+    strict: bool = False,
+) -> Tuple[List[str], List[str]]:
+    """Load actors across append-only local-observation channel upgrades."""
+
+    adapted = dict(state_dict)
+    for first_conv in (
+        "encoder.0.weight",
+        "emergency_encoder.0.weight",
+        "cleanup_encoder.0.weight",
+        "suppression_encoder.0.weight",
+        "dish_encoder.0.weight",
+        "assembly_encoder.0.weight",
+        "workflow_encoder.0.weight",
+    ):
+        source_weight = adapted.get(first_conv)
+        target_weight = actor.state_dict()[first_conv]
+        if (
+            source_weight is not None
+            and source_weight.shape != target_weight.shape
+            and source_weight.ndim == target_weight.ndim == 4
+            and source_weight.shape[0] == target_weight.shape[0]
+            and source_weight.shape[2:] == target_weight.shape[2:]
+            and source_weight.shape[1] < target_weight.shape[1]
+        ):
+            expanded = torch.zeros_like(target_weight)
+            expanded[:, : source_weight.shape[1]] = source_weight.to(
+                device=expanded.device,
+                dtype=expanded.dtype,
+            )
+            adapted[first_conv] = expanded
+    for target_name in actor.state_dict():
+        if (
+            target_name.startswith("suppression_")
+            and target_name not in adapted
+        ):
+            source_name = target_name.replace(
+                "suppression_", "emergency_", 1
+            )
+            if source_name in adapted:
+                adapted[target_name] = adapted[source_name].clone()
+    incompatible = actor.load_state_dict(adapted, strict=strict)
+    return list(incompatible.missing_keys), list(
+        incompatible.unexpected_keys
+    )
 
 
 class CentralCritic(nn.Module):
@@ -318,10 +806,24 @@ def environment_config(config: TrainConfig) -> BurgerConfig:
         plate_return_steps=config.plate_return_steps,
         reward=BurgerRewardConfig(
             correct_delivery=config.correct_delivery_reward,
+            raw_beef_placed=config.raw_beef_placed_reward,
+            dirty_plate_pickup=config.dirty_plate_pickup_reward,
+            wash_started=config.wash_started_reward,
+            wash_progress=config.wash_progress_reward,
+            plate_washed=config.plate_washed_reward,
+            fire_extinguished=config.fire_extinguished_reward,
             fire_started=config.fire_started_penalty,
+            fire_active=config.fire_active_penalty,
+            fire_food_handling=config.fire_food_handling_penalty,
+            dirty_plate_counter_handling=(
+                config.dirty_plate_counter_handling_penalty
+            ),
             collision=config.collision_penalty,
             time_step=config.time_step_penalty,
             potential_scale=config.potential_scale,
+            navigation_potential_scale=(
+                config.navigation_potential_scale
+            ),
             gamma=config.gamma,
         ),
     )
@@ -346,7 +848,16 @@ def audit_training_contract(config: TrainConfig) -> Dict[str, object]:
 
     reward_keys = {
         "correct_delivery",
+        "raw_beef_placed",
+        "dirty_plate_pickup",
+        "wash_started",
+        "wash_progress",
+        "plate_washed",
+        "fire_extinguished",
         "fire_started",
+        "fire_active",
+        "fire_food_handling",
+        "dirty_plate_counter_handling",
         "collision",
         "time_step",
         "potential",
@@ -610,10 +1121,26 @@ def audit_training_contract(config: TrainConfig) -> Dict[str, object]:
         "actions": action_effects,
         "reward_components": {
             "correct_delivery": burger_config.reward.correct_delivery,
+            "raw_beef_placed": burger_config.reward.raw_beef_placed,
+            "dirty_plate_pickup": burger_config.reward.dirty_plate_pickup,
+            "wash_started": burger_config.reward.wash_started,
+            "wash_progress": burger_config.reward.wash_progress,
+            "plate_washed": burger_config.reward.plate_washed,
+            "fire_extinguished": burger_config.reward.fire_extinguished,
             "fire_started": burger_config.reward.fire_started,
+            "fire_active": burger_config.reward.fire_active,
+            "fire_food_handling": (
+                burger_config.reward.fire_food_handling
+            ),
+            "dirty_plate_counter_handling": (
+                burger_config.reward.dirty_plate_counter_handling
+            ),
             "collision": burger_config.reward.collision,
             "time_step": burger_config.reward.time_step,
             "potential_scale": burger_config.reward.potential_scale,
+            "navigation_potential_scale": (
+                burger_config.reward.navigation_potential_scale
+            ),
             "potential_gamma": burger_config.reward.gamma,
         },
         "active_masks_never_empty": True,
@@ -621,8 +1148,47 @@ def audit_training_contract(config: TrainConfig) -> Dict[str, object]:
         "unrelated_agents_continue_after_local_collision": True,
         "invalid_interactions_have_no_positive_reward": True,
         "potential_gamma_matches_ppo_gamma": True,
+        "standard_objective_positive_event_is_delivery_only": (
+            "standard"
+            not in {
+                config.training_start_stage,
+                config.training_start_mix_stage,
+            }
+            or all(
+                value == 0
+                for value in (
+                    burger_config.reward.raw_beef_placed,
+                    burger_config.reward.dirty_plate_pickup,
+                    burger_config.reward.wash_started,
+                    burger_config.reward.wash_progress,
+                    burger_config.reward.plate_washed,
+                    burger_config.reward.fire_extinguished,
+                )
+            )
+        ),
+        "mixed_curriculum_event_reward_override": (
+            config.allow_mixed_curriculum_event_rewards
+        ),
+        "base_actor_frozen_for_emergency": (
+            config.freeze_base_actor_for_emergency
+        ),
+        "cleanup_actor_frozen_for_fire": (
+            config.freeze_cleanup_actor_for_fire
+        ),
+        "emergency_actor_frozen_for_suppression": (
+            config.freeze_emergency_actor_for_suppression
+        ),
+        "suppression_actor_frozen_for_emergency": (
+            config.freeze_suppression_actor_for_emergency
+        ),
+        "base_actor_frozen_for_dish": config.freeze_base_actor_for_dish,
+        "fire_actors_frozen_for_dish": (
+            config.freeze_fire_actors_for_dish
+        ),
         "wash_progress_does_not_reserve_agent": True,
         "sink_process_mask_has_no_hidden_owner": True,
+        "ppo_rollout_temperature": config.rollout_temperature,
+        "actor_anchor_kl_coef": config.actor_anchor_kl_coef,
     }
 
 
@@ -757,21 +1323,51 @@ class BurgerVectorEnv:
         num_envs: int,
         num_agents: int,
         burger_config: BurgerConfig,
+        start_stage: str = "standard",
+        start_mix_stage: Optional[str] = None,
+        randomize_start_positions: bool = False,
+        random_start_max_objective_distance: Optional[int] = None,
+        random_start_candidate_positions: Sequence[Tuple[int, int]] = (),
+        training_episode_steps: Optional[int] = None,
+        seed: int = 0,
     ) -> None:
         self.num_envs = num_envs
         self.num_agents = num_agents
+        self.training_episode_steps = training_episode_steps
+        self.start_stages = tuple(
+            start_mix_stage
+            if start_mix_stage is not None and index % 2
+            else start_stage
+            for index in range(num_envs)
+        )
         self.envs = [
             BurgerMAPPOEnv(
                 mdp=BurgerGridworld(config=burger_config),
                 num_players=num_agents,
+                start_stage=self.start_stages[index],
+                randomize_player_positions=randomize_start_positions,
+                random_start_max_objective_distance=(
+                    random_start_max_objective_distance
+                ),
+                random_start_candidate_positions=(
+                    random_start_candidate_positions
+                ),
             )
-            for _ in range(num_envs)
+            for index in range(num_envs)
         ]
-        resets = [env.reset(seed=index) for index, env in enumerate(self.envs)]
+        resets = [
+            env.reset(seed=seed + index)
+            for index, env in enumerate(self.envs)
+        ]
         self.observations = np.stack([item[0] for item in resets])
         self.shared_observations = np.stack([item[1] for item in resets])
         self.available_actions = np.stack([item[2] for item in resets])
         self.episode_returns = np.zeros(num_envs, dtype=np.float64)
+        self.episode_steps = np.zeros(num_envs, dtype=np.int64)
+        self.episode_initial_deliveries = np.asarray(
+            [env._state_view.delivered_orders for env in self.envs],
+            dtype=np.int64,
+        )
 
     def step(
         self, action_batch: np.ndarray
@@ -792,18 +1388,62 @@ class BurgerVectorEnv:
         rewards = np.asarray(
             [item[2][0, 0] for item in transitions], dtype=np.float32
         )
-        dones = np.asarray(
+        environment_dones = np.asarray(
             [item[3][0] for item in transitions], dtype=np.bool_
         )
+        self.episode_steps += 1
+        curriculum_truncations = np.asarray(
+            [
+                self.training_episode_steps is not None
+                and stage != "standard"
+                and self.episode_steps[index]
+                >= self.training_episode_steps
+                for index, stage in enumerate(self.start_stages)
+            ],
+            dtype=np.bool_,
+        )
+        dones = np.logical_or(environment_dones, curriculum_truncations)
         infos = [item[4] for item in transitions]
+
+        # A shortened curriculum episode is an actual terminal boundary for
+        # PPO, not an environment transition into the next reset state.
+        # Replace gamma * Phi(s') with terminal Phi=0 so potential shaping
+        # still telescopes and cannot be optimized through the time limit.
+        for index, truncated in enumerate(curriculum_truncations):
+            if truncated and not environment_dones[index]:
+                mdp = self.envs[index].mdp
+                terminal_phi = mdp.potential(
+                    self.envs[index]._state_view
+                )
+                correction = (
+                    -mdp.config.reward.potential_scale
+                    * mdp.config.reward.gamma
+                    * terminal_phi
+                )
+                rewards[index] += correction
+                infos[index][0]["reward_breakdown"]["potential"] += (
+                    correction
+                )
+                infos[index][0][
+                    "training_terminal_potential_correction"
+                ] = correction
         self.episode_returns += rewards
 
         for index, done in enumerate(dones):
             if done:
+                infos[index][0]["training_truncated"] = bool(
+                    curriculum_truncations[index]
+                    and not environment_dones[index]
+                )
                 infos[index][0]["episode_deliveries"] = int(
-                    self.envs[index].state.delivered_orders
+                    self.envs[index]._state_view.delivered_orders
+                    - self.episode_initial_deliveries[index]
                 )
                 reset_obs, reset_shared, reset_available = self.envs[index].reset()
+                self.episode_initial_deliveries[index] = (
+                    self.envs[index]._state_view.delivered_orders
+                )
+                self.episode_steps[index] = 0
                 observations[index] = reset_obs
                 shared[index] = reset_shared
                 available_actions[index] = reset_available
@@ -838,8 +1478,81 @@ class PPOTrainer:
         )
         if config.actor_init:
             self.load_actor(config.actor_init)
+        self.reference_actor: Optional[LocalActor] = None
+        if config.actor_anchor_kl_coef > 0:
+            self.reference_actor = copy.deepcopy(self.actor).to(self.device)
+            self.reference_actor.eval()
+            for parameter in self.reference_actor.parameters():
+                parameter.requires_grad_(False)
+        if config.freeze_base_actor_for_emergency:
+            for module in (
+                self.actor.encoder,
+                self.actor.agent_embedding,
+                self.actor.policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_cleanup_actor_for_fire:
+            for module in (
+                self.actor.cleanup_encoder,
+                self.actor.cleanup_policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_emergency_actor_for_suppression:
+            for module in (
+                self.actor.emergency_encoder,
+                self.actor.emergency_policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_suppression_actor_for_emergency:
+            for module in (
+                self.actor.suppression_encoder,
+                self.actor.suppression_policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_base_actor_for_dish:
+            for module in (
+                self.actor.encoder,
+                self.actor.agent_embedding,
+                self.actor.policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_fire_actors_for_dish:
+            for module in (
+                self.actor.emergency_encoder,
+                self.actor.emergency_policy,
+                self.actor.cleanup_encoder,
+                self.actor.cleanup_policy,
+                self.actor.suppression_encoder,
+                self.actor.suppression_policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_dish_actor_for_assembly:
+            for module in (
+                self.actor.dish_encoder,
+                self.actor.dish_policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        if config.freeze_assembly_actor_for_workflow:
+            for module in (
+                self.actor.assembly_encoder,
+                self.actor.assembly_policy,
+            ):
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
+        actor_parameters = [
+            parameter
+            for parameter in self.actor.parameters()
+            if parameter.requires_grad
+        ]
         self.optimizer = torch.optim.Adam(
-            list(self.actor.parameters()) + list(self.critic.parameters()),
+            actor_parameters + list(self.critic.parameters()),
             lr=config.learning_rate,
             eps=1e-5,
         )
@@ -847,6 +1560,17 @@ class PPOTrainer:
             config.num_envs,
             config.num_agents,
             environment_config(config),
+            start_stage=config.training_start_stage,
+            start_mix_stage=config.training_start_mix_stage,
+            randomize_start_positions=config.randomize_start_positions,
+            random_start_max_objective_distance=(
+                config.random_start_max_objective_distance
+            ),
+            random_start_candidate_positions=(
+                config.random_start_candidate_positions
+            ),
+            training_episode_steps=config.training_episode_steps,
+            seed=config.seed,
         )
         self.expert_demo = (
             generate_single_agent_expert_demo(config)
@@ -941,10 +1665,26 @@ class PPOTrainer:
             checkpoint_path, map_location=self.device, weights_only=True
         )
         state_dict = checkpoint.get("actor", checkpoint)
-        missing, unexpected = self.actor.load_state_dict(
-            state_dict, strict=False
+        missing, unexpected = load_actor_state_dict_compatible(
+            self.actor, state_dict, strict=False
         )
-        allowed_missing = {"agent_embedding.weight"}
+        allowed_missing = {
+            "agent_embedding.weight",
+            *{
+                name
+                for name in self.actor.state_dict()
+                if name.startswith(
+                    (
+                        "emergency_",
+                        "cleanup_",
+                        "suppression_",
+                        "dish_",
+                        "assembly_",
+                        "workflow_",
+                    )
+                )
+            },
+        }
         if unexpected or set(missing) - allowed_missing:
             raise ValueError(
                 "Actor checkpoint mismatch: missing={}, unexpected={}".format(
@@ -1001,7 +1741,16 @@ class PPOTrainer:
         actor_slots = 0
         reward_component_totals = {
             "correct_delivery": 0.0,
+            "raw_beef_placed": 0.0,
+            "dirty_plate_pickup": 0.0,
+            "wash_started": 0.0,
+            "wash_progress": 0.0,
+            "plate_washed": 0.0,
+            "fire_extinguished": 0.0,
             "fire_started": 0.0,
+            "fire_active": 0.0,
+            "fire_food_handling": 0.0,
+            "dirty_plate_counter_handling": 0.0,
             "collision": 0.0,
             "time_step": 0.0,
             "potential": 0.0,
@@ -1031,7 +1780,7 @@ class PPOTrainer:
             logits = _masked_logits(
                 self.actor(flat_local, self.agent_ids),
                 available.flatten(0, 1),
-            )
+            ) / config.rollout_temperature
             distribution = Categorical(logits=logits)
             active_actions = distribution.sample()
             active_log_probs = distribution.log_prob(active_actions)
@@ -1054,7 +1803,7 @@ class PPOTrainer:
             old_positions = [
                 tuple(
                     player.position
-                    for player in vector_env.state.players
+                    for player in vector_env._state_view.players
                 )
                 for vector_env in self.vector_env.envs
             ]
@@ -1097,7 +1846,9 @@ class PPOTrainer:
                 ]
                 new_positions = tuple(
                     player.position
-                    for player in self.vector_env.envs[env_index].state.players
+                    for player in self.vector_env.envs[
+                        env_index
+                    ]._state_view.players
                 )
                 agent_event = any(
                     "agent" in event or "agents" in event
@@ -1224,6 +1975,7 @@ class PPOTrainer:
             "policy_loss": [],
             "value_loss": [],
             "bc_loss": [],
+            "actor_anchor_kl": [],
             "entropy": [],
             "approx_kl": [],
             "clip_fraction": [],
@@ -1245,10 +1997,12 @@ class PPOTrainer:
                     .to(self.device)
                     .flatten(0, 1)
                 )
-                logits = _masked_logits(
-                    self.actor(local_batch.flatten(0, 1), agent_ids),
+                flat_local_batch = local_batch.flatten(0, 1)
+                raw_logits = _masked_logits(
+                    self.actor(flat_local_batch, agent_ids),
                     action_mask,
                 )
+                logits = raw_logits / config.rollout_temperature
                 distribution = Categorical(logits=logits)
                 action_batch = actions[indices].to(self.device).flatten()
                 new_log_prob = distribution.log_prob(action_batch).view(
@@ -1287,11 +2041,26 @@ class PPOTrainer:
                     if config.bc_aux_coef > 0
                     else torch.zeros((), device=self.device)
                 )
+                if self.reference_actor is not None:
+                    with torch.no_grad():
+                        reference_logits = _masked_logits(
+                            self.reference_actor(
+                                flat_local_batch, agent_ids
+                            ),
+                            action_mask,
+                        )
+                    actor_anchor_kl = torch.distributions.kl_divergence(
+                        Categorical(logits=reference_logits),
+                        Categorical(logits=raw_logits),
+                    ).mean()
+                else:
+                    actor_anchor_kl = torch.zeros((), device=self.device)
                 loss = (
                     policy_loss
                     + config.value_coef * value_loss
                     - config.entropy_coef * entropy
                     + config.bc_aux_coef * bc_loss
+                    + config.actor_anchor_kl_coef * actor_anchor_kl
                 )
 
                 self.optimizer.zero_grad(set_to_none=True)
@@ -1312,6 +2081,9 @@ class PPOTrainer:
                 metrics["policy_loss"].append(float(policy_loss.detach()))
                 metrics["value_loss"].append(float(value_loss.detach()))
                 metrics["bc_loss"].append(float(bc_loss.detach()))
+                metrics["actor_anchor_kl"].append(
+                    float(actor_anchor_kl.detach())
+                )
                 metrics["entropy"].append(float(entropy.detach()))
                 metrics["approx_kl"].append(float(approx_kl.detach()))
                 metrics["clip_fraction"].append(float(clip_fraction.detach()))
@@ -1399,8 +2171,11 @@ def evaluate_policy(
     config: TrainConfig,
     device: torch.device,
     episodes: Optional[int] = None,
+    start_stage: str = "standard",
+    random_start_max_objective_distance: Optional[int] = None,
+    random_start_candidate_positions: Optional[Sequence[Point]] = None,
 ) -> Dict[str, float]:
-    """Fixed-start deterministic evaluation; sparse success is reported alone."""
+    """Deterministic evaluation; sparse success is reported separately."""
 
     episode_count = episodes or config.eval_episodes
     total_rewards: List[float] = []
@@ -1408,6 +2183,13 @@ def evaluate_policy(
     deliveries: List[int] = []
     collisions: List[int] = []
     fires: List[int] = []
+    raw_beef_placements: List[int] = []
+    washed_plates: List[int] = []
+    dirty_plate_pickups: List[int] = []
+    fires_extinguished: List[int] = []
+    fire_active_steps: List[int] = []
+    discarded_items: List[int] = []
+    longest_stagnation_steps: List[int] = []
     action_counts = np.zeros(Action.NUM_ACTIONS, dtype=np.int64)
     all_agents_stay_steps = 0
     all_agents_noop_steps = 0
@@ -1419,12 +2201,31 @@ def evaluate_policy(
         env = BurgerMAPPOEnv(
             mdp=BurgerGridworld(config=environment_config(config)),
             num_players=config.num_agents,
+            start_stage=start_stage,
+            randomize_player_positions=config.randomize_start_positions,
+            random_start_max_objective_distance=(
+                random_start_max_objective_distance
+            ),
+            random_start_candidate_positions=(
+                config.random_start_candidate_positions
+                if random_start_candidate_positions is None
+                else random_start_candidate_positions
+            ),
         )
         observations, _, available = env.reset(seed=config.seed + episode)
+        initial_deliveries = env.state.delivered_orders
         episode_reward = 0.0
         episode_sparse = 0.0
         episode_collisions = 0
         episode_fires = 0
+        episode_raw_beef_placements = 0
+        episode_washed_plates = 0
+        episode_dirty_plate_pickups = 0
+        episode_fires_extinguished = 0
+        episode_fire_active_steps = 0
+        episode_discarded_items = 0
+        episode_stagnation = 0
+        episode_longest_stagnation = 0
         done = False
         while not done:
             local = torch.as_tensor(
@@ -1481,14 +2282,63 @@ def evaluate_policy(
             )
             if new_positions == old_positions and not agent_event:
                 all_agents_noop_steps += 1
+            task_progress = any(
+                event_type
+                in {
+                    "correct_delivery",
+                    "raw_beef_placed",
+                    "cooked_beef_added_to_held_plate",
+                    "ingredient_added_from_dispenser",
+                    "ingredient_added_to_held_plate",
+                    "ingredient_added_to_counter_plate",
+                    "dirty_plate_pickup",
+                    "wash_started",
+                    "wash_progress",
+                    "plate_washed",
+                    "fire_extinguished",
+                }
+                for event_type in event_types
+            )
+            if new_positions != old_positions or task_progress:
+                episode_stagnation = 0
+            else:
+                episode_stagnation += 1
+                episode_longest_stagnation = max(
+                    episode_longest_stagnation,
+                    episode_stagnation,
+                )
             episode_collisions += event_types.count("collision")
             episode_fires += event_types.count("fire_started")
+            episode_fires_extinguished += event_types.count(
+                "fire_extinguished"
+            )
+            episode_fire_active_steps += event_types.count("fire_active")
+            episode_raw_beef_placements += event_types.count(
+                "raw_beef_placed"
+            )
+            episode_washed_plates += event_types.count("plate_washed")
+            episode_dirty_plate_pickups += event_types.count(
+                "dirty_plate_pickup"
+            )
+            episode_discarded_items += (
+                event_types.count("food_discarded")
+                + event_types.count("plate_contents_discarded")
+            )
             done = bool(dones[0])
         total_rewards.append(episode_reward)
         sparse_rewards.append(episode_sparse)
-        deliveries.append(env.state.delivered_orders)
+        deliveries.append(
+            env.state.delivered_orders - initial_deliveries
+        )
         collisions.append(episode_collisions)
         fires.append(episode_fires)
+        raw_beef_placements.append(episode_raw_beef_placements)
+        washed_plates.append(episode_washed_plates)
+        dirty_plate_pickups.append(episode_dirty_plate_pickups)
+        fires_extinguished.append(episode_fires_extinguished)
+        fire_active_steps.append(episode_fire_active_steps)
+        discarded_items.append(episode_discarded_items)
+        longest_stagnation_steps.append(episode_longest_stagnation)
 
     actor.train()
     return {
@@ -1500,6 +2350,40 @@ def evaluate_policy(
         ),
         "eval_mean_collisions": float(np.mean(collisions)),
         "eval_mean_fires": float(np.mean(fires)),
+        "eval_mean_fires_extinguished": float(
+            np.mean(fires_extinguished)
+        ),
+        "eval_fire_extinguish_success_rate": float(
+            np.mean(np.asarray(fires_extinguished) >= 1)
+        ),
+        "eval_mean_fire_active_steps": float(np.mean(fire_active_steps)),
+        "eval_max_fire_active_steps": float(np.max(fire_active_steps)),
+        "eval_mean_raw_beef_placements": float(
+            np.mean(raw_beef_placements)
+        ),
+        "eval_raw_beef_placement_rate": float(
+            np.mean(np.asarray(raw_beef_placements) >= 1)
+        ),
+        "eval_mean_washed_plates": float(np.mean(washed_plates)),
+        "eval_wash_success_rate": float(
+            np.mean(np.asarray(washed_plates) >= 1)
+        ),
+        "eval_dirty_plate_pickup_rate": float(
+            np.mean(np.asarray(dirty_plate_pickups) >= 1)
+        ),
+        "eval_second_delivery_rate": float(
+            np.mean(np.asarray(deliveries) >= 2)
+        ),
+        "eval_delivery_success_rate": float(
+            np.mean(np.asarray(deliveries) >= 1)
+        ),
+        "eval_mean_discarded_items": float(np.mean(discarded_items)),
+        "eval_mean_longest_stagnation_steps": float(
+            np.mean(longest_stagnation_steps)
+        ),
+        "eval_max_longest_stagnation_steps": float(
+            np.max(longest_stagnation_steps)
+        ),
         "eval_stay_action_ratio": float(
             action_counts[stay_index] / max(action_counts.sum(), 1)
         ),
@@ -1513,6 +2397,90 @@ def evaluate_policy(
             np.count_nonzero(action_counts) / Action.NUM_ACTIONS
         ),
     }
+
+
+def evaluate_configured_stages(
+    actor: LocalActor,
+    config: TrainConfig,
+    device: torch.device,
+) -> Dict[str, float]:
+    """Report the standard objective and every configured curriculum reset."""
+
+    # Failure-focused candidate pools belong only to the curriculum stage.
+    # The standard regression gate must continue to cover the full map.
+    metrics = evaluate_policy(
+        actor,
+        config,
+        device,
+        start_stage="standard",
+        random_start_candidate_positions=(),
+    )
+    if config.training_start_stage != "standard":
+        stage_metrics = evaluate_policy(
+            actor,
+            config,
+            device,
+            start_stage=config.training_start_stage,
+        )
+        metrics.update(
+            {
+                "train_stage_{}".format(name): value
+                for name, value in stage_metrics.items()
+            }
+        )
+        if config.random_start_max_objective_distance is not None:
+            curriculum_metrics = evaluate_policy(
+                actor,
+                config,
+                device,
+                start_stage=config.training_start_stage,
+                random_start_max_objective_distance=(
+                    config.random_start_max_objective_distance
+                ),
+            )
+            metrics.update(
+                {
+                    "curriculum_train_stage_{}".format(name): value
+                    for name, value in curriculum_metrics.items()
+                }
+            )
+    if (
+        config.training_start_mix_stage is not None
+        and config.training_start_mix_stage
+        not in {"standard", config.training_start_stage}
+    ):
+        mix_metrics = evaluate_policy(
+            actor,
+            config,
+            device,
+            start_stage=config.training_start_mix_stage,
+        )
+        metrics.update(
+            {
+                "mix_stage_{}".format(name): value
+                for name, value in mix_metrics.items()
+            }
+        )
+        if (
+            config.random_start_max_objective_distance is not None
+            and config.training_start_mix_stage != "standard"
+        ):
+            curriculum_mix_metrics = evaluate_policy(
+                actor,
+                config,
+                device,
+                start_stage=config.training_start_mix_stage,
+                random_start_max_objective_distance=(
+                    config.random_start_max_objective_distance
+                ),
+            )
+            metrics.update(
+                {
+                    "curriculum_mix_stage_{}".format(name): value
+                    for name, value in curriculum_mix_metrics.items()
+                }
+            )
+    return metrics
 
 
 def train(config: TrainConfig) -> Path:
@@ -1591,7 +2559,7 @@ def train(config: TrainConfig) -> Path:
             )
             if should_evaluate:
                 row.update(
-                    evaluate_policy(
+                    evaluate_configured_stages(
                         trainer.actor,
                         config,
                         trainer.device,
@@ -1638,7 +2606,7 @@ def train(config: TrainConfig) -> Path:
         "global_env_steps": trainer.global_step,
         "measured_steps_per_second": trainer.global_step
         / max(time.perf_counter() - training_started, 1e-9),
-        "final_evaluation": evaluate_policy(
+        "final_evaluation": evaluate_configured_stages(
             trainer.actor, config, trainer.device
         ),
     }
@@ -1669,6 +2637,20 @@ def _resolve_device(requested: str) -> torch.device:
     return device
 
 
+def _parse_start_position(value: str) -> Tuple[int, int]:
+    parts = value.split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            "start position must use X,Y"
+        )
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "start position coordinates must be integers"
+        ) from error
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> TrainConfig:
     parser = argparse.ArgumentParser(
         description="Train one-agent PPO or multi-agent MAPPO on one burger map"
@@ -1682,11 +2664,30 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrainConfig:
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--num-minibatches", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--gamma", type=float, default=0.999)
+    parser.add_argument("--gae-lambda", type=float, default=0.98)
     parser.add_argument("--clip-coef", type=float, default=0.2)
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
+    parser.add_argument(
+        "--actor-anchor-kl-coef",
+        type=float,
+        default=0.0,
+        help=(
+            "KL penalty to the actor-init policy on the same observations. "
+            "Use it for continual hard-case training without forgetting an "
+            "already accepted checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--rollout-temperature",
+        type=float,
+        default=1.0,
+        help=(
+            "Temperature applied consistently to the PPO behavior and update "
+            "distributions. Evaluation remains deterministic at temperature 1."
+        ),
+    )
     parser.add_argument("--max-grad-norm", type=float, default=10.0)
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--horizon", type=int, default=429)
@@ -1695,10 +2696,49 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrainConfig:
     parser.add_argument("--wash-steps", type=int, default=10)
     parser.add_argument("--plate-return-steps", type=int, default=12)
     parser.add_argument("--correct-delivery-reward", type=float, default=20.0)
+    parser.add_argument("--raw-beef-placed-reward", type=float, default=0.0)
+    parser.add_argument("--dirty-plate-pickup-reward", type=float, default=0.0)
+    parser.add_argument("--wash-started-reward", type=float, default=0.0)
+    parser.add_argument("--wash-progress-reward", type=float, default=0.0)
+    parser.add_argument("--plate-washed-reward", type=float, default=0.0)
+    parser.add_argument(
+        "--fire-extinguished-reward", type=float, default=0.0
+    )
     parser.add_argument("--fire-started-penalty", type=float, default=-5.0)
+    parser.add_argument(
+        "--fire-active-penalty",
+        type=float,
+        default=-0.25,
+        help=(
+            "Safety cost for every transition that ends with an active grill "
+            "fire. This makes earlier extinguishing strictly better without "
+            "creating a repeatable extinguish bonus."
+        ),
+    )
+    parser.add_argument(
+        "--fire-food-handling-penalty",
+        type=float,
+        default=-2.0,
+        help=(
+            "One-time safety cost for touching ingredient dispensers while "
+            "the grill is on fire; the action remains gameplay-legal."
+        ),
+    )
+    parser.add_argument(
+        "--dirty-plate-counter-handling-penalty",
+        type=float,
+        default=-0.25,
+        help=(
+            "Small cost for placing or retrieving a dirty plate on a "
+            "worktop; the action remains legal."
+        ),
+    )
     parser.add_argument("--collision-penalty", type=float, default=-0.05)
-    parser.add_argument("--time-step-penalty", type=float, default=-0.01)
+    parser.add_argument("--time-step-penalty", type=float, default=0.0)
     parser.add_argument("--potential-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--navigation-potential-scale", type=float, default=1.0
+    )
     parser.add_argument(
         "--max-all-agents-stay-ratio", type=float, default=0.98
     )
@@ -1715,6 +2755,121 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrainConfig:
     parser.add_argument("--output-dir", default="runs/burger")
     parser.add_argument("--actor-init")
     parser.add_argument("--deterministic-torch", action="store_true")
+    parser.add_argument(
+        "--training-start-stage",
+        choices=CURRICULUM_START_STAGES,
+        default="standard",
+    )
+    parser.add_argument(
+        "--training-start-mix-stage",
+        choices=CURRICULUM_START_STAGES,
+    )
+    parser.add_argument(
+        "--randomize-start-positions",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--random-start-max-objective-distance",
+        type=int,
+        help=(
+            "For hard one-agent starts, sample initial positions no farther "
+            "than this shortest-path distance from the recovery station. "
+            "Evaluation remains full-map."
+        ),
+    )
+    parser.add_argument(
+        "--random-start-candidate-position",
+        action="append",
+        type=_parse_start_position,
+        dest="random_start_candidate_positions",
+        default=[],
+        metavar="X,Y",
+        help=(
+            "Restrict randomized training starts to a walkable coordinate. "
+            "Repeat this flag to define a failure-focused candidate pool."
+        ),
+    )
+    parser.add_argument(
+        "--training-episode-steps",
+        type=int,
+        help=(
+            "Reset curriculum training episodes after this many control "
+            "steps. The authoritative environment and evaluation horizon "
+            "remain unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--allow-mixed-curriculum-event-rewards",
+        action="store_true",
+        help=(
+            "Explicitly allow temporary fire-extinguish reward in a "
+            "standard-plus-fire curriculum. Final consolidation must omit it."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-base-actor-for-emergency",
+        action="store_true",
+        help=(
+            "Freeze the standard actor and train only the locally gated "
+            "emergency residual branch."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-cleanup-actor-for-fire",
+        action="store_true",
+        help=(
+            "Freeze the post-fire extinguisher cleanup residual while "
+            "training the visible-fire response branch."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-emergency-actor-for-suppression",
+        action="store_true",
+        help=(
+            "Freeze the plate/empty-hand emergency residual while training "
+            "the held-extinguisher suppression branch."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-suppression-actor-for-emergency",
+        action="store_true",
+        help=(
+            "Freeze the held-extinguisher suppression residual while "
+            "training the plate/empty-hand emergency branch."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-base-actor-for-dish",
+        action="store_true",
+        help=(
+            "Freeze the standard actor and train only the plate-shortage "
+            "recovery residual."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-fire-actors-for-dish",
+        action="store_true",
+        help=(
+            "Preserve emergency, suppression, and extinguisher-cleanup "
+            "residuals while training plate-shortage recovery."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-dish-actor-for-assembly",
+        action="store_true",
+        help=(
+            "Preserve the dirty-plate pickup and washing residual while "
+            "training only the post-wash assembly recovery branch."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-assembly-actor-for-workflow",
+        action="store_true",
+        help=(
+            "Preserve the broad post-wash assembly residual while training "
+            "only the held bun-and-lettuce plate workflow residual."
+        ),
+    )
     parser.add_argument("--bc-pretrain-steps", type=int, default=0)
     parser.add_argument("--bc-batch-size", type=int, default=128)
     parser.add_argument("--bc-learning-rate", type=float, default=1e-3)

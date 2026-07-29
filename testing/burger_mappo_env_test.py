@@ -6,6 +6,7 @@ import numpy as np
 from burger_marl.actions import Action, Direction
 from burger_marl.mappo_env import (
     BurgerMAPPOEnv,
+    GLOBAL_CHANNELS,
     LOCAL_CHANNELS,
     MAX_AGENTS,
     NUM_GLOBAL_CHANNELS,
@@ -24,6 +25,58 @@ from burger_marl.env import (
 
 
 class TestBurgerMAPPOContract(unittest.TestCase):
+    def test_dirty_plate_has_a_distinct_actor_observation_channel(self):
+        dirty_env = BurgerMAPPOEnv(
+            num_players=1, start_stage="sink_drop_ready"
+        )
+        dirty_local, dirty_shared, _ = dirty_env.reset(seed=7)
+        center = dirty_env.observation_radius
+        self.assertEqual(
+            dirty_local[
+                0, LOCAL_CHANNELS["plate"], center, center
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            dirty_local[
+                0, LOCAL_CHANNELS["dirty_plate"], center, center
+            ],
+            1.0,
+        )
+        global_grid = dirty_shared[0][
+            : NUM_GLOBAL_CHANNELS
+            * dirty_env.mdp.layout.height
+            * dirty_env.mdp.layout.width
+        ].reshape(
+            NUM_GLOBAL_CHANNELS,
+            dirty_env.mdp.layout.height,
+            dirty_env.mdp.layout.width,
+        )
+        player_x, player_y = dirty_env.state.players[0].position
+        self.assertEqual(
+            global_grid[
+                GLOBAL_CHANNELS["dirty_plate"], player_y, player_x
+            ],
+            1.0,
+        )
+
+        clean_env = BurgerMAPPOEnv(
+            num_players=1, start_stage="plate_ready"
+        )
+        clean_local, _, _ = clean_env.reset(seed=7)
+        self.assertEqual(
+            clean_local[
+                0, LOCAL_CHANNELS["plate"], center, center
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            clean_local[
+                0, LOCAL_CHANNELS["dirty_plate"], center, center
+            ],
+            0.0,
+        )
+
     def test_standalone_action_contract_has_seven_explicit_actions(self):
         self.assertEqual(Action.NUM_ACTIONS, 7)
         self.assertEqual(
@@ -40,8 +93,8 @@ class TestBurgerMAPPOContract(unittest.TestCase):
         )
 
     def test_fixed_shapes_for_one_to_four_active_agents(self):
-        self.assertEqual(NUM_LOCAL_CHANNELS, 26)
-        self.assertEqual(NUM_GLOBAL_CHANNELS, 44)
+        self.assertEqual(NUM_LOCAL_CHANNELS, 31)
+        self.assertEqual(NUM_GLOBAL_CHANNELS, 45)
         for num_players in range(1, MAX_AGENTS + 1):
             env = BurgerMAPPOEnv(num_players=num_players)
             observations, shared, available = env.reset(
@@ -79,6 +132,22 @@ class TestBurgerMAPPOContract(unittest.TestCase):
             self.assertTrue(
                 np.all(env.active_masks()[num_players:] == 0)
             )
+
+    def test_actor_observation_includes_normalized_self_position(self):
+        env = BurgerMAPPOEnv(num_players=1)
+        state = env.state
+        state.players[0].position = (7, 6)
+
+        observation = env._local_observation(state, 0)
+
+        np.testing.assert_allclose(
+            observation[LOCAL_CHANNELS["self_x"]],
+            np.ones((9, 9), dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            observation[LOCAL_CHANNELS["self_y"]],
+            np.full((9, 9), 6 / 7, dtype=np.float32),
+        )
 
     def test_layout_has_no_virtual_assembly_inventory(self):
         env = BurgerMAPPOEnv(num_players=1)
@@ -275,6 +344,48 @@ class TestBurgerMAPPOContract(unittest.TestCase):
             0.0,
         )
 
+    def test_fire_alarm_persists_when_grill_is_occluded(self):
+        env = BurgerMAPPOEnv(
+            num_players=1,
+            start_stage="fire_recovery_ready",
+        )
+        state = env.state
+        state.players[0].position = (7, 1)
+
+        burning = env._local_observation(state, 0)
+        self.assertTrue(
+            np.all(burning[LOCAL_CHANNELS["fire_alarm"]] == 1.0)
+        )
+        self.assertEqual(
+            burning[LOCAL_CHANNELS["burnt_beef"]].max(),
+            0.0,
+        )
+
+        state.grill.food = None
+        safe = env._local_observation(state, 0)
+        self.assertTrue(
+            np.all(safe[LOCAL_CHANNELS["fire_alarm"]] == 0.0)
+        )
+
+    def test_plate_shortage_persists_when_rack_is_occluded(self):
+        env = BurgerMAPPOEnv(
+            num_players=1,
+            start_stage="plate_exhausted_ready",
+        )
+        state = env.state
+        state.players[0].position = (7, 1)
+
+        shortage = env._local_observation(state, 0)
+        self.assertTrue(
+            np.all(shortage[LOCAL_CHANNELS["plate_shortage"]] == 1.0)
+        )
+
+        state.clean_plates = 1
+        stocked = env._local_observation(state, 0)
+        self.assertTrue(
+            np.all(stocked[LOCAL_CHANNELS["plate_shortage"]] == 0.0)
+        )
+
     def test_actor_local_observation_is_world_aligned_not_orientation_aligned(self):
         env = BurgerMAPPOEnv(num_players=1)
         original = env.state
@@ -348,6 +459,31 @@ class TestBurgerMAPPOContract(unittest.TestCase):
                 left_step[4][0]["state_digest"],
                 right_step[4][0]["state_digest"],
             )
+
+    def test_randomized_start_positions_are_seeded_and_cover_floor_cells(self):
+        left = BurgerMAPPOEnv(
+            num_players=1,
+            randomize_player_positions=True,
+        )
+        right = BurgerMAPPOEnv(
+            num_players=1,
+            randomize_player_positions=True,
+        )
+        seen = set()
+        for seed in range(32):
+            left.reset(seed=seed)
+            right.reset(seed=seed)
+            left_position = left.state.players[0].position
+            self.assertEqual(
+                left_position,
+                right.state.players[0].position,
+            )
+            self.assertIn(
+                left_position,
+                left.mdp.layout.valid_player_positions,
+            )
+            seen.add(left_position)
+        self.assertGreater(len(seen), 8)
 
     def test_repeated_invalid_context_actions_cannot_farm_reward(self):
         env = BurgerMAPPOEnv(num_players=1)

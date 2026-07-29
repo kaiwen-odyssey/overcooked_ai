@@ -11,6 +11,7 @@ from burger_marl.env import (
     BurgerGridworld,
     BurgerLayout,
     BurgerPlayerState,
+    BurgerRewardConfig,
     BurgerState,
     GrillState,
     PLATE_CONTENTS,
@@ -89,6 +90,154 @@ class TestBurgerGridworldContract(unittest.TestCase):
             delivery.info["reward_breakdown"]["correct_delivery"], 20.0
         )
         env.mdp.validate_state(delivery.state)
+
+    def test_direct_ppo_curriculum_starts_are_legal_physical_states(self):
+        mdp = BurgerGridworld()
+        expected = {
+            "serve_ready": ("plated_burger", None),
+            "grill_ready": ("plate_bun_lettuce", "cooked_beef"),
+            "cook_ready": ("plate_bun_lettuce", "raw_beef"),
+            "plate_ready": ("clean_plate", "raw_beef"),
+            "plate_pick_ready": (None, "raw_beef"),
+            "rack_ready": (None, "raw_beef"),
+            "raw_ready": ("raw_beef", None),
+            "grill_approach_ready": ("raw_beef", None),
+            "beef_carry_ready": ("raw_beef", None),
+            "beef_pick_ready": (None, None),
+            "wash_ready": (None, None),
+            "wash_required_ready": (None, "raw_beef"),
+            "sink_drop_ready": ("dirty_plate", "raw_beef"),
+            "dirty_plate_carry_ready": ("dirty_plate", "raw_beef"),
+            "dirty_return_ready": (None, None),
+            "second_dish_ready": (None, "raw_beef"),
+            "plate_exhausted_ready": (None, "raw_beef"),
+            "fire_recovery_ready": ("clean_plate", "burnt_beef"),
+            "fire_plate_drop_ready": ("clean_plate", "burnt_beef"),
+            "fire_plate_parked_ready": (None, "burnt_beef"),
+            "fire_extinguisher_pick_ready": (None, "burnt_beef"),
+            "fire_extinguisher_carry_ready": (
+                "extinguisher",
+                "burnt_beef",
+            ),
+            "fire_suppress_ready": ("extinguisher", "burnt_beef"),
+        }
+        for stage, (held, grill_food) in expected.items():
+            with self.subTest(stage=stage):
+                state = mdp.get_start_state(1, stage=stage)
+                mdp.validate_state(state)
+                self.assertEqual(state.players[0].held_object, held)
+                self.assertEqual(state.grill.food, grill_food)
+                self.assertEqual(
+                    state.delivered_orders,
+                    (
+                        state.total_plates
+                        if stage
+                        in {
+                            "wash_required_ready",
+                            "sink_drop_ready",
+                            "dirty_plate_carry_ready",
+                            "plate_exhausted_ready",
+                        }
+                        else int(stage == "second_dish_ready")
+                    ),
+                )
+
+        parked = mdp.get_start_state(
+            1, stage="fire_plate_parked_ready"
+        )
+        self.assertEqual(parked.players[0].position, (4, 1))
+        self.assertEqual(
+            parked.counter_objects,
+            {(4, 0): "plate_bun_lettuce"},
+        )
+
+        wash_ready = mdp.get_start_state(1, stage="wash_ready")
+        self.assertTrue(wash_ready.sink.has_dirty_plate)
+        self.assertEqual(wash_ready.clean_plates, 3)
+        wash_required = mdp.get_start_state(
+            1, stage="wash_required_ready"
+        )
+        self.assertTrue(wash_required.sink.has_dirty_plate)
+        self.assertEqual(wash_required.clean_plates, 0)
+        self.assertEqual(
+            wash_required.dirty_plates_at_return,
+            wash_required.total_plates - 1,
+        )
+        sink_drop = mdp.get_start_state(1, stage="sink_drop_ready")
+        self.assertEqual(
+            sink_drop.players[0].held_object,
+            "dirty_plate",
+        )
+        self.assertEqual(sink_drop.clean_plates, 0)
+        dirty_carry = mdp.get_start_state(
+            1, stage="dirty_plate_carry_ready"
+        )
+        self.assertEqual(
+            dirty_carry.players[0].held_object,
+            "dirty_plate",
+        )
+        self.assertNotEqual(
+            sink_drop.players[0].position,
+            dirty_carry.players[0].position,
+        )
+        dirty_return_ready = mdp.get_start_state(
+            1, stage="dirty_return_ready"
+        )
+        self.assertEqual(dirty_return_ready.dirty_plates_at_return, 1)
+        second_dish_ready = mdp.get_start_state(
+            1, stage="second_dish_ready"
+        )
+        self.assertEqual(second_dish_ready.delivered_orders, 1)
+        self.assertEqual(second_dish_ready.dirty_plates_at_return, 1)
+        self.assertEqual(second_dish_ready.grill.food, "raw_beef")
+        plate_exhausted = mdp.get_start_state(
+            1, stage="plate_exhausted_ready"
+        )
+        self.assertEqual(plate_exhausted.clean_plates, 0)
+        self.assertEqual(
+            plate_exhausted.dirty_plates_at_return,
+            plate_exhausted.total_plates,
+        )
+        self.assertEqual(
+            plate_exhausted.delivered_orders,
+            plate_exhausted.total_plates,
+        )
+        self.assertEqual(plate_exhausted.grill.food, "raw_beef")
+
+        beef_pick_ready = mdp.get_start_state(
+            1, stage="beef_pick_ready"
+        )
+        beef_carry_ready = mdp.get_start_state(
+            1, stage="beef_carry_ready"
+        )
+        grill_approach_ready = mdp.get_start_state(
+            1, stage="grill_approach_ready"
+        )
+        self.assertEqual(
+            grill_approach_ready.players[0].position, (4, 1)
+        )
+        self.assertEqual(
+            beef_carry_ready.players[0].position, (3, 1)
+        )
+        self.assertEqual(
+            beef_carry_ready.players[0].held_object, "raw_beef"
+        )
+        self.assertEqual(beef_pick_ready.players[0].position, (3, 1))
+        picked = mdp.get_state_transition(
+            beef_pick_ready, [Action.PICK_DROP]
+        )
+        self.assertEqual(
+            picked.state.players[0].held_object, "raw_beef"
+        )
+        self.assertIn(
+            "dispenser_pickup",
+            {event["type"] for event in picked.info["events"]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "one active agent"):
+            mdp.get_start_state(2, stage="serve_ready")
+        with self.assertRaisesRegex(ValueError, "Unknown curriculum"):
+            mdp.get_start_state(1, stage="invented")
 
     def test_rejects_unknown_or_wrong_sized_joint_actions(self):
         mdp = BurgerGridworld()
@@ -277,6 +426,64 @@ class TestBurgerGridworldContract(unittest.TestCase):
 
         self.assertLess(cycle_reward, 0.0)
         self.assertIsNone(state.players[0].held_object)
+
+    def test_counter_drop_pick_cycle_cannot_farm_shaping_reward(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_standard_start_state(1)
+        state.players[0].position = (4, 6)
+        state.players[0].held_object = "bun"
+        mdp.validate_state(state)
+        cycle_reward = 0.0
+
+        for _ in range(20):
+            transition = mdp.get_state_transition(
+                state, [Action.PICK_DROP]
+            )
+            state = transition.state
+            cycle_reward += transition.reward
+
+        self.assertLess(cycle_reward, 0.0)
+        self.assertEqual(state.players[0].held_object, "bun")
+        self.assertNotIn((4, 7), state.counter_objects)
+
+    def test_wash_rewards_require_one_conserved_dirty_plate(self):
+        mdp = BurgerGridworld(
+            config=BurgerConfig(total_plates=1, wash_steps=2)
+        )
+        state = mdp.get_start_state(1, stage="standard")
+        state.clean_plates = 0
+        state.sink = SinkState(has_dirty_plate=True, wash_progress=0)
+        state.players[0].position = (0, 6)
+        mdp.validate_state(state)
+
+        first = mdp.get_state_transition(state, [Action.PROCESS])
+        self.assertEqual(
+            first.info["reward_breakdown"]["wash_progress"],
+            mdp.config.reward.wash_progress,
+        )
+        completed = mdp.get_state_transition(
+            first.state, [Action.PROCESS]
+        )
+        self.assertEqual(
+            completed.info["reward_breakdown"]["plate_washed"],
+            mdp.config.reward.plate_washed,
+        )
+        self.assertEqual(
+            completed.state.players[0].held_object,
+            "clean_plate",
+        )
+
+        repeated = mdp.get_state_transition(
+            completed.state, [Action.PROCESS]
+        )
+        self.assertEqual(
+            repeated.info["reward_breakdown"]["wash_progress"],
+            0.0,
+        )
+        self.assertEqual(
+            repeated.info["reward_breakdown"]["plate_washed"],
+            0.0,
+        )
 
     def test_trash_empties_loaded_plate_but_conserves_the_plate(self):
         mdp = BurgerGridworld(
@@ -795,6 +1002,234 @@ class TestBurgerGridworldContract(unittest.TestCase):
             discounted_shaping, expected, places=10
         )
 
+    def test_fire_recovery_potential_rewards_every_required_phase(self):
+        mdp = BurgerGridworld()
+        holding_plate = mdp.get_start_state(1)
+        holding_plate.players[0].position = (6, 1)
+        holding_plate.players[0].held_object = "clean_plate"
+        holding_plate.clean_plates -= 1
+        holding_plate.grill = GrillState(food="burnt_beef")
+        mdp.validate_state(holding_plate)
+
+        plate_dropped = copy.deepcopy(holding_plate)
+        plate_dropped.players[0].held_object = None
+        plate_dropped.counter_objects[(2, 0)] = "clean_plate"
+        mdp.validate_state(plate_dropped)
+
+        extinguisher_held = copy.deepcopy(plate_dropped)
+        extinguisher_held.players[0].held_object = "extinguisher"
+        extinguisher_held.extinguisher_available = False
+        mdp.validate_state(extinguisher_held)
+
+        fire_cleared = copy.deepcopy(extinguisher_held)
+        fire_cleared.grill = GrillState()
+        mdp.validate_state(fire_cleared)
+
+        extinguisher_returned = copy.deepcopy(fire_cleared)
+        extinguisher_returned.players[0].held_object = None
+        extinguisher_returned.extinguisher_available = True
+        mdp.validate_state(extinguisher_returned)
+
+        potentials = [
+            mdp.potential(state)
+            for state in (
+                holding_plate,
+                plate_dropped,
+                extinguisher_held,
+                fire_cleared,
+                extinguisher_returned,
+            )
+        ]
+        self.assertEqual(potentials, sorted(potentials))
+        self.assertEqual(len(set(potentials)), len(potentials))
+
+    def test_fire_plate_drop_pickup_cycle_cannot_earn_shaping_reward(self):
+        mdp = BurgerGridworld()
+        holding = mdp.get_start_state(
+            1, stage="fire_plate_drop_ready"
+        )
+        dropped = mdp.get_state_transition(
+            holding, [Action.PICK_DROP]
+        )
+        picked_back = mdp.get_state_transition(
+            dropped.state, [Action.PICK_DROP]
+        )
+
+        self.assertEqual(
+            dropped.state.players[0].held_object, None
+        )
+        self.assertEqual(
+            picked_back.state.players[0].held_object, "clean_plate"
+        )
+        discounted_cycle_reward = (
+            dropped.info["reward_breakdown"]["potential"]
+            + mdp.config.reward.gamma
+            * picked_back.info["reward_breakdown"]["potential"]
+        )
+        self.assertLess(discounted_cycle_reward, 0.0)
+
+    def test_dirty_plate_on_counter_is_not_washed_or_recipe_progress(self):
+        mdp = BurgerGridworld(
+            config=BurgerConfig(
+                total_plates=2,
+                reward=BurgerRewardConfig(
+                    navigation_potential_scale=0.0
+                ),
+            )
+        )
+        held_dirty = BurgerState(
+            players=[
+                BurgerPlayerState((2, 1), Direction.NORTH, "dirty_plate")
+            ],
+            clean_plates=0,
+            total_plates=2,
+        )
+        counter_dirty = copy.deepcopy(held_dirty)
+        counter_dirty.players[0].held_object = None
+        counter_dirty.counter_objects[(2, 0)] = "dirty_plate"
+
+        self.assertGreater(
+            mdp.potential(held_dirty),
+            mdp.potential(counter_dirty),
+        )
+
+        no_plate = BurgerState(
+            players=[BurgerPlayerState((2, 1), Direction.NORTH)],
+            clean_plates=1,
+            total_plates=2,
+            grill=GrillState(food="raw_beef"),
+        )
+        dirty_during_cooking = copy.deepcopy(no_plate)
+        dirty_during_cooking.players[0].held_object = "dirty_plate"
+        self.assertEqual(
+            mdp.potential(no_plate),
+            mdp.potential(dirty_during_cooking),
+        )
+
+    def test_dirty_plate_counter_cycle_receives_handling_cost(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_start_state(
+            1, stage="dirty_plate_carry_ready"
+        )
+        state.players[0].position = (2, 1)
+
+        dropped = mdp.get_state_transition(state, [Action.PICK_DROP])
+        picked_up = mdp.get_state_transition(
+            dropped.state, [Action.PICK_DROP]
+        )
+
+        self.assertEqual(
+            dropped.info["reward_breakdown"][
+                "dirty_plate_counter_handling"
+            ],
+            -0.25,
+        )
+        self.assertEqual(
+            picked_up.info["reward_breakdown"][
+                "dirty_plate_counter_handling"
+            ],
+            -0.25,
+        )
+
+    def test_partial_plate_with_empty_grill_navigates_to_empty_counter(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_standard_start_state(1)
+        state.players[0].held_object = "plate_bun_lettuce"
+        state.clean_plates -= 1
+        for counter in mdp._counter_distances:
+            if counter != (2, 0):
+                state.counter_objects[counter] = "bun"
+
+        state.players[0].position = (7, 6)
+        far_from_counter = mdp._single_agent_navigation_potential(state)
+        state.players[0].position = (2, 1)
+        beside_counter = mdp._single_agent_navigation_potential(state)
+        self.assertGreater(beside_counter, far_from_counter)
+
+    def test_parking_partial_plate_advances_workflow_without_cycle_bonus(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_standard_start_state(1)
+        state.players[0].position = (2, 1)
+        state.players[0].orientation = Direction.NORTH
+        state.players[0].held_object = "plate_bun_lettuce"
+        state.clean_plates -= 1
+        mdp.validate_state(state)
+
+        dropped = mdp.get_state_transition(state, [Action.PICK_DROP])
+        picked_back = mdp.get_state_transition(
+            dropped.state, [Action.PICK_DROP]
+        )
+
+        self.assertEqual(
+            dropped.state.counter_objects[(2, 0)],
+            "plate_bun_lettuce",
+        )
+        self.assertGreater(
+            dropped.info["reward_breakdown"]["potential"], 0.0
+        )
+        gamma = mdp.config.reward.gamma
+        discounted_cycle = (
+            dropped.info["reward_breakdown"]["potential"]
+            + gamma
+            * picked_back.info["reward_breakdown"]["potential"]
+        )
+        self.assertAlmostEqual(
+            discounted_cycle,
+            gamma**2 * mdp.potential(state) - mdp.potential(state),
+        )
+        self.assertLess(discounted_cycle, 0.0)
+
+    def test_fire_navigation_frees_hand_and_returns_extinguisher(self):
+        mdp = BurgerGridworld()
+        holding_plate = mdp.get_start_state(
+            1, stage="fire_recovery_ready"
+        )
+        for counter in mdp._counter_distances:
+            if counter != (2, 0):
+                holding_plate.counter_objects[counter] = "bun"
+
+        holding_plate.players[0].position = (7, 6)
+        far_from_empty_counter = mdp._single_agent_navigation_potential(
+            holding_plate
+        )
+        holding_plate.players[0].position = (2, 1)
+        beside_empty_counter = mdp._single_agent_navigation_potential(
+            holding_plate
+        )
+        self.assertGreater(
+            beside_empty_counter, far_from_empty_counter
+        )
+
+        fire_cleared = mdp.get_start_state(
+            1, stage="fire_suppress_ready"
+        )
+        fire_cleared.grill = GrillState()
+        fire_cleared.players[0].position = (0, 6)
+        far_from_extinguisher = (
+            mdp._single_agent_navigation_potential(fire_cleared)
+        )
+        fire_cleared.players[0].position = (6, 1)
+        beside_extinguisher = (
+            mdp._single_agent_navigation_potential(fire_cleared)
+        )
+        self.assertGreater(
+            beside_extinguisher, far_from_extinguisher
+        )
+
+    def test_navigation_retrieves_parked_plate_when_rack_is_empty(self):
+        mdp = BurgerGridworld(config=BurgerConfig(total_plates=1))
+        state = mdp.get_standard_start_state(1)
+        state.clean_plates = 0
+        state.counter_objects[(2, 0)] = "clean_plate"
+        state.grill = GrillState(food="raw_beef")
+        mdp.validate_state(state)
+
+        state.players[0].position = (7, 6)
+        far_from_plate = mdp._single_agent_navigation_potential(state)
+        state.players[0].position = (2, 1)
+        beside_plate = mdp._single_agent_navigation_potential(state)
+        self.assertGreater(beside_plate, far_from_plate)
+
     def test_every_step_reward_is_auditable_and_pickup_has_no_event_bonus(self):
         mdp = BurgerGridworld(layout((" M", "  "), ((0, 0),)))
         state = mdp.get_standard_start_state(1)
@@ -805,7 +1240,16 @@ class TestBurgerGridworldContract(unittest.TestCase):
             set(breakdown),
             {
                 "correct_delivery",
+                "raw_beef_placed",
+                "dirty_plate_pickup",
+                "wash_started",
+                "wash_progress",
+                "plate_washed",
+                "fire_extinguished",
                 "fire_started",
+                "fire_active",
+                "fire_food_handling",
+                "dirty_plate_counter_handling",
                 "collision",
                 "time_step",
                 "potential",
@@ -814,19 +1258,99 @@ class TestBurgerGridworldContract(unittest.TestCase):
         self.assertAlmostEqual(picked.reward, sum(breakdown.values()))
         self.assertEqual(breakdown["correct_delivery"], 0.0)
         self.assertEqual(breakdown["fire_started"], 0.0)
+        self.assertEqual(breakdown["fire_active"], 0.0)
         self.assertEqual(breakdown["collision"], 0.0)
-        self.assertEqual(breakdown["time_step"], -0.01)
-        self.assertAlmostEqual(breakdown["potential"], 0.495)
+        self.assertEqual(breakdown["time_step"], 0.0)
+        self.assertAlmostEqual(
+            breakdown["potential"],
+            mdp.config.reward.gamma * mdp.potential(picked.state)
+            - mdp.potential(state),
+        )
         self.assertIn(
             "dispenser_pickup",
             {event["type"] for event in picked.info["events"]},
         )
-
         idle = mdp.get_state_transition(picked.state, [Action.STAY])
         self.assertLess(idle.reward, 0.0)
         self.assertAlmostEqual(
             idle.reward,
             sum(idle.info["reward_breakdown"].values()),
+        )
+
+    def test_navigation_shaping_rewards_progress_without_cycle_bonus(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_standard_start_state(1)
+        closer = mdp.get_state_transition(state, [Direction.EAST])
+        farther = mdp.get_state_transition(
+            closer.state, [Direction.WEST]
+        )
+
+        self.assertGreater(
+            closer.info["reward_breakdown"]["potential"], 0.0
+        )
+        gamma = mdp.config.reward.gamma
+        discounted = (
+            closer.info["reward_breakdown"]["potential"]
+            + gamma * farther.info["reward_breakdown"]["potential"]
+        )
+        expected = (
+            gamma**2 * mdp.potential(farther.state)
+            - mdp.potential(state)
+        )
+        self.assertAlmostEqual(discounted, expected)
+
+    def test_navigation_prioritizes_next_order_until_plates_are_exhausted(self):
+        mdp = BurgerGridworld()
+        reusable_plates = mdp.get_standard_start_state(1)
+        reusable_plates.clean_plates = 3
+        reusable_plates.pending_plate_returns = [12]
+        reusable_plates.delivered_orders = 1
+        reusable_plates.players[0].position = (3, 1)
+        at_beef = mdp._single_agent_navigation_potential(reusable_plates)
+        reusable_plates.players[0].position = (6, 6)
+        at_return = mdp._single_agent_navigation_potential(reusable_plates)
+        self.assertGreater(at_beef, at_return)
+
+        exhausted = mdp.get_start_state(
+            1, stage="plate_exhausted_ready"
+        )
+        exhausted.players[0].position = (3, 1)
+        away_from_return = mdp._single_agent_navigation_potential(exhausted)
+        exhausted.players[0].position = (6, 6)
+        beside_return = mdp._single_agent_navigation_potential(exhausted)
+        self.assertGreater(beside_return, away_from_return)
+
+    def test_exhausted_plate_wash_progress_is_policy_invariant_shaping(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_start_state(1, stage="wash_required_ready")
+        transition = mdp.get_state_transition(state, [Action.PROCESS])
+
+        self.assertEqual(transition.state.sink.wash_progress, 1)
+        self.assertEqual(
+            transition.info["reward_breakdown"]["wash_progress"],
+            0.0,
+        )
+        self.assertGreater(
+            transition.info["reward_breakdown"]["potential"],
+            0.0,
+        )
+
+    def test_navigation_shaping_penalizes_duplicate_raw_beef_pickup(self):
+        mdp = BurgerGridworld()
+        state = mdp.get_start_state(1, stage="rack_ready")
+        state.players[0].position = (3, 1)
+        mdp.validate_state(state)
+
+        duplicate = mdp.get_state_transition(
+            state, [Action.PICK_DROP]
+        )
+
+        self.assertEqual(
+            duplicate.state.players[0].held_object, "raw_beef"
+        )
+        self.assertEqual(duplicate.state.grill.food, "raw_beef")
+        self.assertLess(
+            duplicate.info["reward_breakdown"]["potential"], 0.0
         )
 
     def test_each_plate_requires_full_wash_duration(self):
@@ -982,8 +1506,59 @@ class TestBurgerGridworldContract(unittest.TestCase):
         burnt = mdp.get_state_transition(almost_burnt.state, [Action.STAY])
         self.assertEqual(burnt.state.grill.food, "burnt_beef")
         self.assertEqual(burnt.info["reward_breakdown"]["fire_started"], -5.0)
+        self.assertEqual(burnt.info["reward_breakdown"]["fire_active"], -0.25)
         later = mdp.get_state_transition(burnt.state, [Action.STAY])
         self.assertEqual(later.info["reward_breakdown"]["fire_started"], 0.0)
+        self.assertEqual(later.info["reward_breakdown"]["fire_active"], -0.25)
+
+    def test_fire_food_handling_is_legal_but_receives_safety_cost(self):
+        config = BurgerConfig(
+            total_plates=1,
+            reward=BurgerRewardConfig(fire_food_handling=-2.0),
+        )
+        mdp = BurgerGridworld(
+            layout(("B ", "  "), ((0, 1),)),
+            config,
+        )
+        fire = BurgerState(
+            players=[
+                BurgerPlayerState(
+                    (0, 1),
+                    Direction.NORTH,
+                    "clean_plate",
+                )
+            ],
+            clean_plates=0,
+            total_plates=1,
+            grill=GrillState(food="burnt_beef"),
+        )
+        handled = mdp.get_state_transition(fire, [Action.PICK_DROP])
+
+        self.assertEqual(
+            handled.state.players[0].held_object,
+            "plate_bun",
+        )
+        self.assertEqual(
+            handled.info["reward_breakdown"]["fire_food_handling"],
+            -2.0,
+        )
+        event = next(
+            event
+            for event in handled.info["events"]
+            if event["type"] == "fire_food_handling"
+        )
+        self.assertEqual(
+            event["source_event"],
+            "ingredient_added_from_dispenser",
+        )
+
+        no_fire = copy.deepcopy(fire)
+        no_fire.grill = GrillState()
+        normal = mdp.get_state_transition(no_fire, [Action.PICK_DROP])
+        self.assertEqual(
+            normal.info["reward_breakdown"]["fire_food_handling"],
+            0.0,
+        )
 
     def test_default_grill_timing_and_fire_lockout(self):
         config = BurgerConfig()

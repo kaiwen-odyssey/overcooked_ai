@@ -1,37 +1,62 @@
 # NEXUS Burger MARL Lab
 
 BP-ready interactive visualization for the Overcooked burger multi-agent task.
-It demonstrates three coordination layouts, one-to-four agent scaling, a
-MAPPO/CTDE training contract, failure injection, and sim-to-real-to-sim replay.
+It demonstrates the authoritative kitchen state, one-to-four agent scaling, a
+MAPPO/CTDE training contract, failure recovery, and sim-to-real-to-sim replay.
 
-The current browser animation uses deterministic scripted trajectories and is
-visibly labeled as demo data. It does not claim to be a trained checkpoint.
+Single-agent standard, dirty-plate, and fire-recovery scenarios replay the
+accepted PPO checkpoint with deterministic masked-argmax actions. Multi-agent
+scaling remains visibly labeled demonstration data until MAPPO training is
+complete.
 
-## Run
+## One-command WebUI
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.13.1 or newer. From the repository root:
 
 ```bash
-npm install
+./burger_lab/run-webui.sh
+```
+
+Open <http://localhost:3000>. The launcher installs locked dependencies when
+needed, creates a standalone production build, and starts it.
+
+To use another port:
+
+```bash
+BURGER_WEBUI_PORT=53242 ./burger_lab/run-webui.sh
+```
+
+## Development
+
+```bash
+cd burger_lab
+npm ci
 npm run dev
 ```
 
-Open the local URL printed by the development server. A production-compatible
-build is created with:
+The development server prints its local URL. Before submitting changes, run:
 
 ```bash
-npm run build
+npm run lint
+npm test
+npm run smoke:webui
 ```
 
-The connected Python simulator should emit the frame contract documented in
-`../docs/burger_marl_blueprint.md`. The interface can then replace its scripted
-frame generator without changing the visual components.
+`npm run build` also creates `dist/standalone/`. It can be copied to another
+machine with Node.js 22.13.1+ and started without the source tree:
+
+```bash
+node dist/standalone/server.js
+```
+
+The Burger WebUI GitHub Actions check uploads this standalone directory as a
+downloadable PR artifact after it verifies the live page and PPO manifest.
 
 ## Main controls
 
-- switch among Cramped Galley, Split Service, and Coordination Ring;
-- compare one to four active agents;
+- inspect the Cramped Galley PPO replay and one-to-four agent scaling study;
+- switch among standard, dirty-plate, and fire-recovery PPO starts;
 - play, pause, reset, and change replay speed;
-- inject an overcooked-grill failure and watch recovery;
+- watch the policy extinguish a grill fire and resume production;
 - inspect MAPPO/CTDE settings and reward design;
 - export a JSON replay summary.
