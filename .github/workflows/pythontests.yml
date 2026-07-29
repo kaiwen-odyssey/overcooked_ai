@@ -11,9 +11,9 @@ jobs:
   ubuntu_mdp_tests:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
     - name: Set up Python 3.10.16
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: 3.10.16
         architecture: 'x64'
@@ -35,7 +35,7 @@ jobs:
         source .venv/bin/activate
         coverage run -m unittest discover -s testing/ -p "*_test.py"
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v1
+      uses: codecov/codecov-action@v7
       with:
         name: codecov-report
         fail_ci_if_error: false

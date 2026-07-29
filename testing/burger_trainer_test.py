@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 import unittest
 from dataclasses import replace
@@ -27,6 +28,18 @@ from burger_marl.training import (
 
 
 class TestBurgerPPOTrainer(unittest.TestCase):
+    def setUp(self):
+        # PPOTrainer intentionally seeds process-global RNGs. Keep those
+        # changes local to each test so unrelated suites remain order-independent.
+        self.python_random_state = random.getstate()
+        self.numpy_random_state = np.random.get_state()
+        self.torch_random_state = torch.random.get_rng_state()
+
+    def tearDown(self):
+        random.setstate(self.python_random_state)
+        np.random.set_state(self.numpy_random_state)
+        torch.random.set_rng_state(self.torch_random_state)
+
     def test_emergency_residual_is_locally_gated(self):
         trainer = PPOTrainer(self._config())
         actor = trainer.actor
