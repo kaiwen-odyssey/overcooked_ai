@@ -9,11 +9,12 @@ frames; it does not reimplement policy inference or mutate environment state.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -125,10 +126,27 @@ def ui_item(item: str | None) -> str | None:
     return item.replace("_", "-") if item is not None else None
 
 
-def checkpoint_config(checkpoint: dict[str, Any]) -> TrainConfig:
-    raw = checkpoint.get("train_config", {})
+def validate_single_agent_ppo_checkpoint(
+    checkpoint: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Reject checkpoints that cannot truthfully be labeled one-agent PPO."""
+
+    raw = checkpoint.get("train_config")
     if not isinstance(raw, dict):
         raise ValueError("Checkpoint is missing train_config")
+    if raw.get("algorithm") != "ppo" or raw.get("num_agents") != 1:
+        raise ValueError(
+            "WebUI replay requires a single-agent PPO checkpoint "
+            "(train_config.algorithm='ppo', train_config.num_agents=1)"
+        )
+    actor = checkpoint.get("actor")
+    if not isinstance(actor, dict) or not actor:
+        raise ValueError("Checkpoint is missing a non-empty actor state dict")
+    return raw
+
+
+def checkpoint_config(checkpoint: dict[str, Any]) -> TrainConfig:
+    raw = validate_single_agent_ppo_checkpoint(checkpoint)
     allowed = {field.name for field in fields(TrainConfig)}
     values = {key: value for key, value in raw.items() if key in allowed}
     values.update(
@@ -164,6 +182,33 @@ def checkpoint_config(checkpoint: dict[str, Any]) -> TrainConfig:
         }
     )
     return TrainConfig(**values)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def actor_state_sha256(state_dict: Mapping[str, torch.Tensor]) -> str:
+    """Hash tensor names, shapes, dtypes, and bytes independent of torch.save."""
+
+    digest = hashlib.sha256()
+    for name in sorted(state_dict):
+        tensor = state_dict[name]
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"Actor state entry {name!r} is not a tensor")
+        value = tensor.detach().cpu().contiguous()
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(value.dtype).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(json.dumps(list(value.shape)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def motion_state(
@@ -256,6 +301,8 @@ def export_replay(
         checkpoint_path, map_location="cpu", weights_only=True
     )
     config = checkpoint_config(checkpoint)
+    checkpoint_sha256 = sha256_file(checkpoint_path)
+    actor_sha256 = actor_state_sha256(checkpoint["actor"])
     env = BurgerMAPPOEnv(
         mdp=BurgerGridworld(config=environment_config(config)),
         num_players=1,
@@ -432,6 +479,8 @@ def export_replay(
         "execution": "deterministic argmax with authoritative action masks",
         "checkpoint": str(checkpoint_path),
         "checkpointLabel": checkpoint_path.stem,
+        "checkpointSha256": checkpoint_sha256,
+        "actorStateSha256": actor_sha256,
         "scenarioId": scenario["id"],
         "scenarioLabel": scenario["label"],
         "startStage": start_stage,

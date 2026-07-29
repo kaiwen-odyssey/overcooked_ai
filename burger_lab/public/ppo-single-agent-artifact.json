@@ -1,0 +1,1900 @@
+{
+  "acceptance": {
+    "accepted": true,
+    "gates": {
+      "all_scenario_success_rates": true,
+      "fire_extinguish_rate": true,
+      "fire_recovery_latency": true,
+      "standard_mean_deliveries": true
+    },
+    "thresholds": {
+      "maximum_fire_active_steps": 16,
+      "minimum_fire_extinguish_rate": 1.0,
+      "minimum_scenario_success_rate": 0.95,
+      "minimum_standard_mean_deliveries": 2.0
+    }
+  },
+  "algorithm": "PPO",
+  "checkpoint": {
+    "actor_state_sha256": "5639323da8cb1710476674c571ef60fd682b64b2d0f50d9757584c5447ef2cb3",
+    "global_step": 32768,
+    "label": "checkpoint_000004",
+    "sha256": "9277c8990f6465dc46c66cdd4f72679139433ccd771e80e471a3e964e5cd5bbe",
+    "source_path": "runs/burger_single_ppo_v24/workflow_residual_dirty_65k/ppo_1agent_v2_seed20261018/checkpoint_000004.pt",
+    "update": 4
+  },
+  "environment": {
+    "action_contract": "standalone_v2_adjacent_pick_drop_process",
+    "action_mask_contract": "local_visible_adjacent_context_v2",
+    "control_step_seconds": 0.42,
+    "horizon_steps": 429,
+    "world_object_contract": "visible_counter_or_plate_v1"
+  },
+  "evaluation": {
+    "aggregate_deliveries_per_minute": 1.7357642357642358,
+    "aggregate_mean_deliveries": 5.2125,
+    "episodes": 160,
+    "positions_per_scenario": 40,
+    "protocol": "deterministic masked argmax over every walkable start position",
+    "scenarios": {
+      "dirty_plate_carry_ready": {
+        "deliveries_per_minute": 1.7399267399267397,
+        "failures": [
+          [
+            4,
+            1
+          ]
+        ],
+        "mean_deliveries": 5.225,
+        "mean_fires_started": 0.6,
+        "mean_washed_plates": 5.75,
+        "position_results": [
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              0,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              1,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              3
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 2,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              3,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              3,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 0,
+            "fire_active_steps": 30,
+            "fires_extinguished": 2,
+            "fires_started": 2,
+            "position": [
+              4,
+              1
+            ],
+            "washed_plates": 2
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              4,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              5,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              5,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              4
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              6,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              6,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              3
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              4
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              7,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              7,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              4
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              6
+            ],
+            "washed_plates": 7
+          }
+        ],
+        "positions": 40,
+        "success_rate": 0.975
+      },
+      "fire_recovery_ready": {
+        "deliveries_per_minute": 1.7482517482517481,
+        "failures": [],
+        "fire_extinguish_rate": 1.0,
+        "max_fire_active_steps": 14,
+        "mean_deliveries": 5.25,
+        "mean_fire_active_steps": 9.55,
+        "mean_fires_started": 0.0,
+        "mean_washed_plates": 3.775,
+        "position_results": [
+          {
+            "deliveries": 6,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              0,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              0,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              0,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 13,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              0,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 14,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              0,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              1,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              1,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              1,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              1,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 13,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              1,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              2,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              2,
+              2
+            ],
+            "washed_plates": 3
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              2,
+              3
+            ],
+            "washed_plates": 3
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              2,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              2,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              2,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 1,
+            "fire_active_steps": 6,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              3,
+              1
+            ],
+            "washed_plates": 1
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              3,
+              2
+            ],
+            "washed_plates": 3
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              3,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 13,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              3,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 1,
+            "fire_active_steps": 5,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              4,
+              1
+            ],
+            "washed_plates": 1
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 6,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              4,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              4,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              4,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              5,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 5,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              5,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              5,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              5,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              5,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              6,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 6,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              6,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              6,
+              3
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              6,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              6,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              6,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              7,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              7,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              7,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              7,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 0,
+            "position": [
+              7,
+              6
+            ],
+            "washed_plates": 4
+          }
+        ],
+        "positions": 40,
+        "success_rate": 1.0
+      },
+      "plate_exhausted_ready": {
+        "deliveries_per_minute": 1.5651015651015652,
+        "failures": [
+          [
+            1,
+            1
+          ]
+        ],
+        "mean_deliveries": 4.7,
+        "mean_fires_started": 0.75,
+        "mean_washed_plates": 5.7,
+        "position_results": [
+          {
+            "deliveries": 5,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              1
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 2,
+            "fire_active_steps": 23,
+            "fires_extinguished": 3,
+            "fires_started": 3,
+            "position": [
+              0,
+              2
+            ],
+            "washed_plates": 2
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              4
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 6,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              5
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              0,
+              6
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 0,
+            "fire_active_steps": 21,
+            "fires_extinguished": 3,
+            "fires_started": 3,
+            "position": [
+              1,
+              1
+            ],
+            "washed_plates": 1
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 25,
+            "fires_extinguished": 2,
+            "fires_started": 2,
+            "position": [
+              1,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 6,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              4
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              5
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              1,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              1
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 7,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              2
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 6,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              3
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              4
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              2,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              3,
+              1
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 8,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              3,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              3,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              4,
+              1
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              4,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              4,
+              6
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 11,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              5,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 3,
+            "fire_active_steps": 10,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              5,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              4
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 9,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              6,
+              1
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              2
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              3
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              4
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              6
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 5,
+            "fire_active_steps": 12,
+            "fires_extinguished": 1,
+            "fires_started": 1,
+            "position": [
+              7,
+              1
+            ],
+            "washed_plates": 6
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              2
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              4
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              5
+            ],
+            "washed_plates": 7
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              6
+            ],
+            "washed_plates": 7
+          }
+        ],
+        "positions": 40,
+        "success_rate": 0.975
+      },
+      "standard": {
+        "deliveries_per_minute": 1.8897768897768896,
+        "failures": [],
+        "mean_deliveries": 5.675,
+        "mean_fires_started": 0.0,
+        "mean_washed_plates": 4.475,
+        "position_results": [
+          {
+            "deliveries": 5,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              0,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              0,
+              2
+            ],
+            "washed_plates": 3
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              0,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              0,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              0,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              1,
+              1
+            ],
+            "washed_plates": 3
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              1,
+              2
+            ],
+            "washed_plates": 3
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              1,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              1,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              1,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              3
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              2,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              2
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              3,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 4,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              4,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              4
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              5,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              3
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              5
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              6,
+              6
+            ],
+            "washed_plates": 5
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              1
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              2
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              4
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              5
+            ],
+            "washed_plates": 4
+          },
+          {
+            "deliveries": 6,
+            "fire_active_steps": 0,
+            "fires_extinguished": 0,
+            "fires_started": 0,
+            "position": [
+              7,
+              6
+            ],
+            "washed_plates": 5
+          }
+        ],
+        "positions": 40,
+        "success_rate": 1.0
+      }
+    }
+  },
+  "inference_model": {
+    "path": "single-agent-ppo-actor.pt",
+    "sha256": "ab587ca7e64b1aaee170f07e11e2c8297e0a228843e527ddee3b1bab269b8c00"
+  },
+  "num_agents": 1,
+  "schema": "nexus.burger.single-agent-ppo-artifact.v1",
+  "webui_replays": [
+    {
+      "deliveries": 6,
+      "evaluation_seed": 20260920,
+      "path": "burger_lab/public/ppo-policy-replay-dirty.json",
+      "scenario": "dirty",
+      "sha256": "c0729ee7c425b2a8e1f1f121f26d14e2b2a73833af0aed3ef7a547bb9ef91b91",
+      "start_position": [
+        7,
+        4
+      ]
+    },
+    {
+      "deliveries": 6,
+      "evaluation_seed": 20260920,
+      "path": "burger_lab/public/ppo-policy-replay-fire.json",
+      "scenario": "fire",
+      "sha256": "2a53897319ace8e0c353891727fab0b9a3964858c306a35810a24e3fac3f1554",
+      "start_position": [
+        7,
+        4
+      ]
+    },
+    {
+      "deliveries": 6,
+      "evaluation_seed": 20261018,
+      "path": "burger_lab/public/ppo-policy-replay-standard.json",
+      "scenario": "standard",
+      "sha256": "086ea8da03484aef080bc68f10e5410e4fd24c1b59d219c56ae87090bc0bbeff",
+      "start_position": [
+        2,
+        3
+      ]
+    }
+  ]
+}

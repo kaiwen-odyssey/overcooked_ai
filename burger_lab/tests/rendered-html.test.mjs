@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
@@ -30,6 +31,15 @@ async function render() {
 }
 
 async function loadPureSimulation() {
+  const ppoArtifact = JSON.parse(
+    await readFile(
+      new URL(
+        "../public/ppo-single-agent-artifact.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
   let pageSource = await readFile(
     new URL("../app/page.tsx", import.meta.url),
     "utf8",
@@ -60,6 +70,7 @@ globalThis.__simulation = {
   }).outputText;
   const context = {
     console,
+    ppoArtifact,
     exports: {},
     module: { exports: {} },
     require(identifier) {
@@ -94,7 +105,10 @@ test("server-renders the NEXUS simulator shell", async () => {
   assert.match(html, /协作规模与边际效应/);
   assert.match(html, /训练步数与每局平均送餐数/);
   assert.match(html, /5\.21(?:<!-- -->)? 份\/局/);
-  assert.match(html, /标准 5\.675 · 脏盘 5\.225 · 缺盘 4\.700 · 过火 5\.250/);
+  assert.match(
+    html,
+    /标准(?:<!-- -->|\s)*5\.675(?:<!-- -->|\s)*· 脏盘(?:<!-- -->|\s)*5\.225(?:<!-- -->|\s)*· 缺盘(?:<!-- -->|\s)*4\.700(?:<!-- -->|\s)*· 过火(?:<!-- -->|\s)*5\.250/,
+  );
   assert.match(html, /累计采样环境步数/);
   assert.match(html, /切换为随机位置评估/);
   assert.match(html, /单位时间送餐/);
@@ -224,6 +238,53 @@ test("publishes successful fire and dirty-plate PPO scenarios", async () => {
     assert.equal(replay.frames.at(-1).state.step, 429);
     assert.equal(replay.frames.length, 430);
     assert.ok(replay.maxStagnationSteps <= 60);
+  }
+});
+
+test("binds every PPO replay and metric to one checkpoint artifact", async () => {
+  const replayNames = ["standard", "dirty", "fire"];
+  const replayEntries = await Promise.all(
+    replayNames.map(async (name) => {
+      const path = new URL(
+        `../public/ppo-policy-replay-${name}.json`,
+        import.meta.url,
+      );
+      const bytes = await readFile(path);
+      return {
+        name,
+        payload: JSON.parse(bytes.toString("utf8")),
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    }),
+  );
+  const artifact = JSON.parse(
+    await readFile(
+      new URL(
+        "../public/ppo-single-agent-artifact.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+
+  assert.equal(artifact.acceptance.accepted, true);
+  assert.equal(artifact.evaluation.episodes, 160);
+  assert.equal(artifact.evaluation.positions_per_scenario, 40);
+  assert.equal(artifact.evaluation.aggregate_mean_deliveries, 5.2125);
+  assert.match(artifact.checkpoint.sha256, /^[0-9a-f]{64}$/);
+  assert.match(artifact.checkpoint.actor_state_sha256, /^[0-9a-f]{64}$/);
+
+  for (const { name, payload, sha256 } of replayEntries) {
+    assert.equal(payload.checkpointSha256, artifact.checkpoint.sha256);
+    assert.equal(
+      payload.actorStateSha256,
+      artifact.checkpoint.actor_state_sha256,
+    );
+    const evidence = artifact.webui_replays.find(
+      (entry) => entry.scenario === payload.scenarioId,
+    );
+    assert.ok(evidence, `missing ${name} replay evidence`);
+    assert.equal(evidence.sha256, sha256);
   }
 });
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import ppoArtifact from "../public/ppo-single-agent-artifact.json";
 
 type StationKind =
   | "bun"
@@ -497,8 +498,9 @@ const ppoTrainingProgress = [
   },
   {
     steps: 1_179_648,
-    deliveriesPerEpisode: 5.2125,
-    dpm: 1.7358,
+    deliveriesPerEpisode:
+      ppoArtifact.evaluation.aggregate_mean_deliveries,
+    dpm: ppoArtifact.evaluation.aggregate_deliveries_per_minute,
     phase: "联合困难验收",
     protocol: "40 位置 × 4 场景",
   },
@@ -705,6 +707,8 @@ type PolicyReplay = {
   execution: string;
   checkpoint: string;
   checkpointLabel: string;
+  checkpointSha256: string;
+  actorStateSha256: string;
   scenarioId: PolicyScenarioId;
   scenarioLabel: string;
   startStage: string;
@@ -2266,9 +2270,34 @@ export default function Home() {
           PolicyScenarioId,
           PolicyReplay
         >;
+        const checkpointIdentities = new Set(
+          Object.values(replays).map(
+            (replay) =>
+              `${replay.checkpointSha256}:${replay.actorStateSha256}`,
+          ),
+        );
+        if (
+          checkpointIdentities.size !== 1 ||
+          Object.values(replays).some(
+            (replay) =>
+              replay.algorithm !== "PPO" ||
+              !/^[0-9a-f]{64}$/.test(replay.checkpointSha256) ||
+              !/^[0-9a-f]{64}$/.test(replay.actorStateSha256) ||
+              replay.checkpointSha256 !==
+                ppoArtifact.checkpoint.sha256 ||
+              replay.actorStateSha256 !==
+                ppoArtifact.checkpoint.actor_state_sha256,
+          )
+        ) {
+          throw new Error(
+            "PPO replay bundle mixes checkpoints or lacks model hashes",
+          );
+        }
         setPolicyReplays(replays);
+        setAgentCount(1);
         setPolicyFrameIndex(0);
         setMotionState(replays.standard.frames[0].state);
+        setPlaying(true);
       })
       .catch((error: unknown) => {
         console.error("Unable to load PPO policy replays", error);
@@ -2278,14 +2307,15 @@ export default function Home() {
     };
   }, []);
 
-  useEffect(() => {
-    const replay = policyReplays[policyScenario];
+  const selectPolicyScenario = (scenario: PolicyScenarioId) => {
+    setPolicyScenario(scenario);
+    const replay = policyReplays[scenario];
     if (!replay) return;
     setAgentCount(1);
     setPolicyFrameIndex(0);
     setMotionState(replay.frames[0].state);
     setPlaying(true);
-  }, [policyReplays, policyScenario]);
+  };
 
   useEffect(() => {
     if (!playing) return;
@@ -2459,6 +2489,7 @@ export default function Home() {
     grillTicksRemaining,
     map.eventLabel,
     motionState.agents,
+    motionState.firesStarted,
     dirtyPlatesAtReturn,
     discardedItems,
     nextPlateReturnSteps,
@@ -2684,7 +2715,7 @@ export default function Home() {
                     role="tab"
                     aria-selected={selected}
                     className={selected ? "selected" : ""}
-                    onClick={() => setPolicyScenario(scenario.id)}
+                    onClick={() => selectPolicyScenario(scenario.id)}
                   >
                     <span
                       className={`scenario-glyph scenario-glyph-${scenario.id}`}
@@ -3555,7 +3586,24 @@ export default function Home() {
                 <small>
                   份 / 局 · {latestTrainingPoint.dpm.toFixed(3)} 份 / 分钟
                 </small>
-                <small>标准 5.675 · 脏盘 5.225 · 缺盘 4.700 · 过火 5.250</small>
+                <small>
+                  标准{" "}
+                  {ppoArtifact.evaluation.scenarios.standard.mean_deliveries.toFixed(
+                    3,
+                  )}{" "}
+                  · 脏盘{" "}
+                  {ppoArtifact.evaluation.scenarios.dirty_plate_carry_ready.mean_deliveries.toFixed(
+                    3,
+                  )}{" "}
+                  · 缺盘{" "}
+                  {ppoArtifact.evaluation.scenarios.plate_exhausted_ready.mean_deliveries.toFixed(
+                    3,
+                  )}{" "}
+                  · 过火{" "}
+                  {ppoArtifact.evaluation.scenarios.fire_recovery_ready.mean_deliveries.toFixed(
+                    3,
+                  )}
+                </small>
               </div>
             </div>
 
@@ -3571,7 +3619,9 @@ export default function Home() {
                 </title>
                 <desc id="ppo-progress-description">
                   五个连续训练阶段共采样 1179648 个环境步。最新 checkpoint 在标准、
-                  脏盘、缺盘与过火各 40 个固定位置上的联合均值为每局 5.2125 份。
+                  脏盘、缺盘与过火各{" "}
+                  {ppoArtifact.evaluation.positions_per_scenario} 个固定位置上的联合均值为每局{" "}
+                  {ppoArtifact.evaluation.aggregate_mean_deliveries.toFixed(4)} 份。
                 </desc>
 
                 {trainingPhases.map((phase, index) => {

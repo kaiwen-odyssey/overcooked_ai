@@ -872,6 +872,10 @@ class TestBurgerPPOTrainer(unittest.TestCase):
             ValueError, "dirty_plate_counter_handling_penalty"
         ):
             TrainConfig(dirty_plate_counter_handling_penalty=1.0)
+        with self.assertRaisesRegex(
+            ValueError, "freeze_assembly_actor_for_workflow"
+        ):
+            TrainConfig(freeze_assembly_actor_for_workflow=True)
 
     def test_checkpointed_config_materializes_grill_contract(self):
         config = self._config()

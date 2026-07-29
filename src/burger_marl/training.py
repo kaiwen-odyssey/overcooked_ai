@@ -356,6 +356,10 @@ class TrainConfig:
             raise ValueError(
                 "freeze_dish_actor_for_assembly requires a dish curriculum"
             )
+        if self.freeze_assembly_actor_for_workflow and not dish_curriculum:
+            raise ValueError(
+                "freeze_assembly_actor_for_workflow requires a dish curriculum"
+            )
         if (
             "standard" in stages
             and positive_milestones
