@@ -1,4 +1,12 @@
-on: ['push', 'pull_request']
+name: Python tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
 jobs:
   ubuntu_mdp_tests:
     runs-on: ubuntu-latest
@@ -17,6 +25,7 @@ jobs:
         uv venv
         source .venv/bin/activate
         uv pip install coverage
+        uv pip install torch==2.7.1 --index https://download.pytorch.org/whl/cpu
     - name: Setup # needs -e flag for coverage tests to work
       run: |
         source .venv/bin/activate
