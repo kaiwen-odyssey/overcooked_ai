@@ -6,6 +6,8 @@ on:
       - "burger_lab/**"
       - ".github/workflows/burger-webui.yml"
   push:
+    branches:
+      - master
     paths:
       - "burger_lab/**"
       - ".github/workflows/burger-webui.yml"
